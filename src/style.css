@@ -19,8 +19,13 @@ body {
   background: inherit;
 }
 
+button,
+textarea {
+  font: inherit;
+}
+
 .shell {
-  width: min(32rem, calc(100vw - 2rem));
+  width: min(36rem, calc(100vw - 2rem));
   padding: 2rem;
   border: 1px solid rgba(93, 255, 177, 0.3);
   border-radius: 1.25rem;
@@ -44,10 +49,67 @@ h1 {
 }
 
 .body,
-.status {
+.status,
+.hint {
   margin: 1rem 0 0;
   line-height: 1.5;
   color: rgba(236, 255, 245, 0.82);
+}
+
+.field {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.field span {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 7.5rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(124, 238, 177, 0.28);
+  border-radius: 0.9rem;
+  background: rgba(1, 8, 4, 0.7);
+  color: inherit;
+}
+
+textarea:focus,
+button:focus {
+  outline: 2px solid rgba(124, 238, 177, 0.8);
+  outline-offset: 2px;
+}
+
+.actions {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1rem;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.9rem 1.25rem;
+  background: linear-gradient(135deg, #6cf1ae 0%, #1ea86a 100%);
+  color: #041108;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.9rem;
 }
 
 .status {

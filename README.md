@@ -1,6 +1,6 @@
-# Even G2 Hello World
+# Even G2 Custom Message Tester
 
-Minimal Even Hub app for the Even G2. When loaded in the simulator or on hardware, it creates one full-screen text container that shows `Hello World` on the glasses.
+Minimal Even Hub app for the Even G2. It connects to the Even Hub bridge, creates a startup page on the glasses, and lets you send a custom text message on demand.
 
 ## Requirements
 
@@ -33,6 +33,13 @@ Load on a real device with a QR code:
 ```bash
 npx evenhub qr --url "http://YOUR_LAN_IP:5173"
 ```
+
+## Use it
+
+1. Open the app in the simulator or on-device.
+2. Wait for the bridge connection message.
+3. Type a message in the text box.
+4. Click `Send message` or press `Cmd/Ctrl+Enter`.
 
 ## Build an installable package
 
