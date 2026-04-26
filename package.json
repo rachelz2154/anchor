@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "simulate": "evenhub-simulator http://localhost:5173",
+    "simulate": "node node_modules/@evenrealities/evenhub-simulator/bin/index.js http://localhost:5173",
     "pack": "npm run build && evenhub pack app.json dist -o anchor-hello-world.ehpk",
     "pack:check": "npm run build && evenhub pack app.json dist -o anchor-hello-world.ehpk -c"
   },
