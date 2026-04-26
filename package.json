@@ -1,0 +1,23 @@
+{
+  "name": "anchor-even-g2-hello-world",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "simulate": "evenhub-simulator http://localhost:5173",
+    "pack": "npm run build && evenhub pack app.json dist -o anchor-hello-world.ehpk",
+    "pack:check": "npm run build && evenhub pack app.json dist -o anchor-hello-world.ehpk -c"
+  },
+  "dependencies": {
+    "@evenrealities/even_hub_sdk": "^0.0.10"
+  },
+  "devDependencies": {
+    "@evenrealities/evenhub-cli": "^0.1.13",
+    "@evenrealities/evenhub-simulator": "^0.7.3",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
+  }
+}
