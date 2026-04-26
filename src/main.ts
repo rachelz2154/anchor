@@ -9,6 +9,25 @@ import {
 import './style.css'
 
 const app = document.querySelector<HTMLDivElement>('#app')
+const ANCHOR_API_ORIGIN =
+  (import.meta as ImportMeta & { env?: { VITE_ANCHOR_API_ORIGIN?: string } }).env
+    ?.VITE_ANCHOR_API_ORIGIN || 'http://localhost:8000'
+
+type FocusMessage = {
+  userOnTrack?: boolean
+  message?: string
+  status?: string
+  createdAt?: string
+}
+
+type ImuState = {
+  mode: 'Focus' | 'Distracted'
+  energy: number
+  movingFrac: number
+  x: number
+  y: number
+  z: number
+}
 
 if (!app) {
   throw new Error('Missing #app root element.')
@@ -19,21 +38,59 @@ app.innerHTML = `
     <p class="eyebrow">Even G2 — Anchor</p>
     <h1>IMU Probe</h1>
     <p class="body">
-      Streams accelerometer x/y/z from the glasses and renders the latest sample
-      onto the display.
+      Shows the latest Anchor focus check from your browser activity and keeps
+      IMU status visible for debugging.
     </p>
+    <section class="focus-card" id="focus-card">
+      <p class="focus-label">Latest focus check</p>
+      <p class="focus-message" id="focus-message">Waiting for Anchor...</p>
+      <p class="focus-meta" id="focus-meta">No message yet.</p>
+    </section>
     <p class="status" id="status">Waiting for the Even bridge...</p>
   </main>
 `
 
 const statusNode = document.querySelector<HTMLParagraphElement>('#status')
+const focusCard = document.querySelector<HTMLElement>('#focus-card')
+const focusMessageNode = document.querySelector<HTMLParagraphElement>('#focus-message')
+const focusMetaNode = document.querySelector<HTMLParagraphElement>('#focus-meta')
 
-if (!statusNode) {
-  throw new Error('Missing #status element.')
+if (!statusNode || !focusCard || !focusMessageNode || !focusMetaNode) {
+  throw new Error('Missing required Anchor UI elements.')
 }
 
 const setStatus = (message: string) => {
   statusNode.textContent = message
+}
+
+const formatGlassContent = (message: FocusMessage | null, imu: ImuState | null) => {
+  const prefix = message?.userOnTrack ? 'On track' : 'Check focus'
+  const focusLine = message?.message ? message.message.slice(0, 52) : 'Waiting for focus check...'
+  const imuLine = imu
+    ? `${imu.mode} e:${imu.energy.toFixed(2)} f:${imu.movingFrac.toFixed(2)}`
+    : 'IMU waiting for samples...'
+  const axisLine = imu
+    ? `x:${imu.x.toFixed(1)} y:${imu.y.toFixed(1)} z:${imu.z.toFixed(1)}`
+    : ''
+  return `Anchor — ${prefix}\n${focusLine}\n${imuLine}\n${axisLine}`.trim()
+}
+
+const renderFocusMessage = (message: FocusMessage | null) => {
+  focusCard.classList.toggle('off-track', message?.userOnTrack === false)
+  focusCard.classList.toggle('on-track', message?.userOnTrack === true)
+  focusMessageNode.textContent = message?.message || 'Waiting for Anchor...'
+  focusMetaNode.textContent = message?.createdAt
+    ? `${message.status || 'ok'} · ${new Date(message.createdAt).toLocaleTimeString()}`
+    : 'No message yet.'
+}
+
+const fetchLatestFocusMessage = async () => {
+  const response = await fetch(`${ANCHOR_API_ORIGIN}/messages/latest`)
+  if (!response.ok) {
+    throw new Error(`Anchor message fetch failed: ${response.status}`)
+  }
+  const message = (await response.json()) as FocusMessage
+  return message.message ? message : null
 }
 
 async function bootstrap() {
@@ -41,6 +98,8 @@ async function bootstrap() {
     const bridge = await waitForEvenAppBridge()
 
     setStatus('Bridge connected. Rendering to the glasses...')
+    let latestFocusMessage: FocusMessage | null = null
+    let latestImuState: ImuState | null = null
 
     const helloWorld = new TextContainerProperty({
       xPosition: 0,
@@ -52,7 +111,7 @@ async function bootstrap() {
       paddingLength: 12,
       containerID: 1,
       containerName: 'hello',
-      content: 'Anchor — IMU\nwaiting for samples…',
+      content: formatGlassContent(null, null),
       isEventCapture: 1,
     })
 
@@ -73,6 +132,43 @@ async function bootstrap() {
     const minGlassWriteIntervalMs = 200
     let lastGlassWriteAt = 0
     let glassWriteInFlight = false
+
+    const writeGlasses = async (content: string) => {
+      if (glassWriteInFlight) {
+        return
+      }
+      glassWriteInFlight = true
+      try {
+        await bridge.textContainerUpgrade(
+          new TextContainerUpgrade({
+            containerID: 1,
+            containerName: 'hello',
+            content,
+          }),
+        )
+      } catch (err) {
+        console.warn('textContainerUpgrade failed', err)
+      } finally {
+        glassWriteInFlight = false
+      }
+    }
+
+    const refreshFocusMessage = async () => {
+      try {
+        latestFocusMessage = await fetchLatestFocusMessage()
+        renderFocusMessage(latestFocusMessage)
+        await writeGlasses(formatGlassContent(latestFocusMessage, latestImuState))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to fetch Anchor message.'
+        latestFocusMessage = { userOnTrack: false, message, status: 'fetch_error' }
+        renderFocusMessage(latestFocusMessage)
+      }
+    }
+
+    await refreshFocusMessage()
+    window.setInterval(() => {
+      void refreshFocusMessage()
+    }, 10_000)
 
     // Distraction heuristic — first-pass values, calibrate from console.log('imu', ...)
     // STILL_THRESHOLD: per-sample energy above which we count a sample as "moving"
@@ -120,6 +216,7 @@ async function bootstrap() {
       }
 
       console.log('imu', { x, y, z, energy, mode, movingFrac, n: samples.length })
+      latestImuState = { mode, energy, movingFrac, x, y, z }
       setStatus(
         `${mode}  energy:${energy.toFixed(2)}  frac:${movingFrac.toFixed(2)}  ` +
           `x:${x.toFixed(2)} y:${y.toFixed(2)} z:${z.toFixed(2)}`,
@@ -129,25 +226,8 @@ async function bootstrap() {
         return
       }
       lastGlassWriteAt = now
-      glassWriteInFlight = true
 
-      const content =
-        `Anchor — ${mode}\n` +
-        `energy: ${energy.toFixed(2)}\n` +
-        `x: ${x.toFixed(2)}  y: ${y.toFixed(2)}\n` +
-        `z: ${z.toFixed(2)}`
-      bridge
-        .textContainerUpgrade(
-          new TextContainerUpgrade({
-            containerID: 1,
-            containerName: 'hello',
-            content,
-          }),
-        )
-        .catch((err) => console.warn('textContainerUpgrade failed', err))
-        .finally(() => {
-          glassWriteInFlight = false
-        })
+      void writeGlasses(formatGlassContent(latestFocusMessage, latestImuState))
     })
 
     await bridge.imuControl(true, ImuReportPace.P100)

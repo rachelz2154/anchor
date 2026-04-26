@@ -6,14 +6,25 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 load_dotenv()
 
-from .agent import agent_loop, broadcast, get_active_session, set_queue
+from .agent import broadcast, get_active_session, set_queue
 from .database import get_conn, init_db
+from .firestore_agent import latest_message, run_focus_check_once, firestore_focus_loop
+from .firestore_store import (
+    FirestoreConfigError,
+    FirestoreRequestError,
+    create_live_signal,
+    create_tab_snapshot,
+    firestore_status,
+    set_current_session,
+)
 from .memory import get_all_memory, record_response
 
 _broadcast_queue: asyncio.Queue = asyncio.Queue()
@@ -26,12 +37,19 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 async def lifespan(app: FastAPI):
     init_db()
     set_queue(_broadcast_queue)
-    asyncio.create_task(agent_loop())
+    asyncio.create_task(firestore_focus_loop(broadcast))
     asyncio.create_task(_broadcaster())
     yield
 
 
 app = FastAPI(title="Anchor", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 async def _broadcaster():
@@ -64,6 +82,10 @@ class CheckpointResponseBody(BaseModel):
     response: str        # continue | switch | ignored
 
 
+class FirestoreDocumentBody(BaseModel):
+    data: dict
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.post("/session/start")
@@ -77,6 +99,19 @@ async def start_session(body: SessionStart):
     session_id = cursor.lastrowid
     conn.commit()
     conn.close()
+    session_doc = {
+        "active": True,
+        "sessionId": session_id,
+        "intent": body.intent,
+        "mode": body.mode,
+        "startedAt": datetime.now().isoformat(),
+        "source": "anchor-dashboard",
+    }
+    try:
+        set_current_session(session_doc)
+    except (FirestoreConfigError, FirestoreRequestError) as exc:
+        await broadcast({"type": "agent_error", "message": str(exc)})
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     await broadcast({"type": "session_started", "intent": body.intent, "mode": body.mode, "session_id": session_id})
     return {"session_id": session_id}
 
@@ -90,6 +125,11 @@ async def end_session():
     )
     conn.commit()
     conn.close()
+    try:
+        set_current_session({"active": False, "endedAt": datetime.now().isoformat(), "source": "anchor-dashboard"})
+    except (FirestoreConfigError, FirestoreRequestError) as exc:
+        await broadcast({"type": "agent_error", "message": str(exc)})
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     await broadcast({"type": "session_ended"})
     return {"ok": True}
 
@@ -104,14 +144,27 @@ async def ingest_event(body: EventPayload):
     session = get_active_session()
     if not session:
         return {"ok": False, "reason": "no active session"}
+    payload = dict(body.payload)
+    firestore_signal = {
+        "source": body.source,
+        "type": body.type,
+        **payload,
+        "sessionId": session["id"],
+        "sessionIntent": session["intent"],
+        "sessionMode": session["mode"],
+    }
+    try:
+        create_live_signal(firestore_signal)
+    except (FirestoreConfigError, FirestoreRequestError) as exc:
+        await broadcast({"type": "agent_error", "message": str(exc)})
     conn = get_conn()
     conn.execute(
         "INSERT INTO activity_events (session_id, timestamp, source, type, payload) VALUES (?,?,?,?,?)",
-        (session["id"], datetime.now().isoformat(), body.source, body.type, json.dumps(body.payload)),
+        (session["id"], datetime.now().isoformat(), body.source, body.type, json.dumps(payload)),
     )
     conn.commit()
     conn.close()
-    await broadcast({"type": "new_event", "source": body.source, "event_type": body.type, "payload": body.payload})
+    await broadcast({"type": "new_event", "source": body.source, "event_type": body.type, "payload": payload})
     return {"ok": True}
 
 
@@ -148,6 +201,58 @@ async def checkpoint_response(drift_check_id: int, body: CheckpointResponseBody)
 @app.get("/memory")
 async def memory():
     return get_all_memory()
+
+
+@app.get("/firebase-config")
+async def firebase_config():
+    try:
+        return firestore_status()
+    except FirestoreConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/firestore/live-signal")
+async def firestore_live_signal(body: FirestoreDocumentBody):
+    try:
+        signal_id, signal = create_live_signal(body.data)
+    except (FirestoreConfigError, FirestoreRequestError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    await broadcast({
+        "type": "new_event",
+        "source": signal.get("source", "chrome"),
+        "event_type": signal.get("type", "tab_change"),
+        "payload": signal,
+    })
+    return {"id": signal_id, **signal}
+
+
+@app.post("/firestore/tab-snapshot")
+async def firestore_tab_snapshot(body: FirestoreDocumentBody):
+    try:
+        snapshot_id, snapshot = create_tab_snapshot(body.data)
+    except (FirestoreConfigError, FirestoreRequestError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"id": snapshot_id, **snapshot}
+
+
+@app.get("/messages/latest")
+async def messages_latest():
+    try:
+        return latest_message() or {}
+    except (FirestoreConfigError, FirestoreRequestError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/agent/check-now")
+async def agent_check_now():
+    try:
+        message = await run_focus_check_once()
+    except (FirestoreConfigError, FirestoreRequestError, ValueError, KeyError, Exception) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if message:
+        await broadcast({"type": "focus_message", "message": message})
+        return message
+    return {"ok": False, "reason": "no active Firestore session"}
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────

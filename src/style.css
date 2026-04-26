@@ -44,7 +44,9 @@ h1 {
 }
 
 .body,
-.status {
+.status,
+.focus-message,
+.focus-meta {
   margin: 1rem 0 0;
   line-height: 1.5;
   color: rgba(236, 255, 245, 0.82);
@@ -53,4 +55,39 @@ h1 {
 .status {
   padding-top: 1rem;
   border-top: 1px solid rgba(93, 255, 177, 0.18);
+}
+
+.focus-card {
+  margin-top: 1.25rem;
+  padding: 1rem;
+  border: 1px solid rgba(93, 255, 177, 0.24);
+  border-radius: 1rem;
+  background: rgba(93, 255, 177, 0.08);
+}
+
+.focus-card.off-track {
+  border-color: rgba(255, 109, 109, 0.48);
+  background: rgba(255, 109, 109, 0.08);
+}
+
+.focus-card.on-track {
+  border-color: rgba(124, 238, 177, 0.56);
+}
+
+.focus-label {
+  margin: 0;
+  color: #7ceeb1;
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.focus-message {
+  font-size: 1.05rem;
+}
+
+.focus-meta {
+  margin-top: 0.5rem;
+  color: rgba(236, 255, 245, 0.56);
+  font-size: 0.82rem;
 }

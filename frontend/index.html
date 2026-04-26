@@ -93,6 +93,17 @@
   }
 
   #session-meta { color: var(--text-dim); font-size: 11px; }
+  #latest-message {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-dim);
+    max-width: 720px;
+  }
+  #latest-message.on-track { border-color: rgba(76,175,110,0.4); color: var(--green); }
+  #latest-message.off-track { border-color: rgba(224,85,85,0.4); color: var(--red); }
 
   .mode-pills { display: flex; gap: 6px; }
   .mode-pill {
@@ -291,6 +302,7 @@
     <div class="session-status">
       <div id="session-intent" style="color:var(--text-dim)">No active session</div>
       <div id="session-meta"></div>
+      <div id="latest-message">No Firestore focus message yet.</div>
       <div class="mode-pills">
         <button class="mode-pill" data-mode="light">Light</button>
         <button class="mode-pill active" data-mode="deep">Deep Work</button>
@@ -416,6 +428,10 @@
       case 'agent_error':
         hideAgentStatus();
         console.error('Agent error:', msg.message);
+        renderFocusMessage({ userOnTrack: false, message: msg.message });
+        break;
+      case 'focus_message':
+        renderFocusMessage(msg.message);
         break;
     }
   }
@@ -438,6 +454,7 @@
     document.getElementById('session-meta').textContent = '';
     clearInterval(sessionTimerInterval);
     sessionStartTime = null;
+    renderFocusMessage({ message: 'No active session.', userOnTrack: false });
   }
 
   function updateTimer() {
@@ -514,7 +531,7 @@
   }
 
   function formatEventDesc(type, payload) {
-    if (type === 'tab_change') return `${payload.domain || 'unknown'} — ${Math.round(payload.duration_sec || 0)}s`;
+    if (type === 'tab_change') return `${payload.domain || 'unknown'} — ${Math.round(payload.durationSec || payload.duration_sec || 0)}s`;
     if (type === 'accel_snapshot') return payload.summary || 'motion data';
     if (type === 'idle') return `Idle ${Math.round(payload.duration_sec || 0)}s`;
     if (type === 'app_switch') return `${payload.from || '?'} → ${payload.to || '?'}`;
@@ -582,6 +599,17 @@
 
   function hideAgentStatus() {
     document.getElementById('agent-status').classList.remove('visible');
+  }
+
+  function renderFocusMessage(message) {
+    const el = document.getElementById('latest-message');
+    if (!message || !message.message) {
+      el.textContent = 'No Firestore focus message yet.';
+      el.className = '';
+      return;
+    }
+    el.textContent = message.message;
+    el.className = message.userOnTrack ? 'on-track' : 'off-track';
   }
 
   // ── Checkpoint popup with auto-dismiss ───────────────────────────────────
@@ -688,6 +716,10 @@
       sessionStartTime = new Date(s.started_at + 'Z').getTime();
     }
   });
+  fetch('/messages/latest')
+    .then(r => r.ok ? r.json() : {})
+    .then(renderFocusMessage)
+    .catch(() => renderFocusMessage(null));
 </script>
 </body>
 </html>

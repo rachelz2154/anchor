@@ -1,8 +1,10 @@
 import json
+import os
 
 from anthropic import Anthropic
 
 client = Anthropic()
+FOCUS_MODEL = os.getenv("ANTHROPIC_FOCUS_MODEL", "claude-haiku-4-5-20251001")
 
 MODE_INSTRUCTIONS = {
     "light": (
@@ -69,9 +71,68 @@ Reply ONLY with valid JSON — no prose, no markdown:
 }}"""
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=FOCUS_MODEL,
         max_tokens=300,
         messages=[{"role": "user", "content": prompt}],
     )
 
     return json.loads(response.content[0].text.strip())
+
+
+def check_user_on_track(session: dict, signals: list[dict]) -> dict:
+    intent = session.get("intent", "")
+    mode = session.get("mode", "deep")
+    signal_lines = []
+    for signal in signals[:30]:
+        domain = signal.get("domain", "unknown")
+        duration = signal.get("durationSec", signal.get("duration_sec", 0))
+        title = signal.get("title", "")
+        created_at = signal.get("createdAt", "")
+        signal_lines.append(f"- {created_at}: {domain} for {duration}s {title}".strip())
+
+    activity = "\n".join(signal_lines) or "No browser signals were recorded in the latest window."
+    response = client.messages.create(
+        model=FOCUS_MODEL,
+        max_tokens=250,
+        tools=[
+            {
+                "name": "record_focus_status",
+                "description": "Record whether the user is on track for their declared focus session.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "userOnTrack": {
+                            "type": "boolean",
+                            "description": "True when the recent browser activity matches the stated intent.",
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "One short sentence explaining the decision to display in Anchor.",
+                        },
+                    },
+                    "required": ["userOnTrack", "message"],
+                    "additionalProperties": False,
+                },
+            }
+        ],
+        tool_choice={"type": "tool", "name": "record_focus_status"},
+        messages=[
+            {
+                "role": "user",
+                "content": f"""The user's current focus intent is: "{intent}"
+Focus mode: {mode}
+
+Recent browser signals:
+{activity}
+
+Decide whether the user is doing what they should be doing. Use the tool with exactly:
+userOnTrack: boolean
+message: short direct message for the dashboard""",
+            }
+        ],
+    )
+
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use":
+            return dict(block.input)
+    raise ValueError("Structured focus status response was not returned")

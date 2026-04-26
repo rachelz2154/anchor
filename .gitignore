@@ -12,3 +12,4 @@ __pycache__/
 # Project
 anchor.db
 .env
+firebase-key.json
