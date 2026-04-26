@@ -29,7 +29,7 @@ def _summarise_events(events: list[dict]) -> str:
     lines = []
     for e in events:
         payload = json.loads(e["payload"]) if isinstance(e["payload"], str) else e["payload"]
-        if e["type"] == "tab_change":
+        if e["type"] in {"tab_change", "tab_active"}:
             lines.append(
                 f"  Browser tab: {payload.get('domain', 'unknown')} "
                 f"— {payload.get('duration_sec', 0):.0f}s"
@@ -88,7 +88,8 @@ def check_user_on_track(session: dict, signals: list[dict]) -> dict:
         duration = signal.get("durationSec", signal.get("duration_sec", 0))
         title = signal.get("title", "")
         created_at = signal.get("createdAt", "")
-        signal_lines.append(f"- {created_at}: {domain} for {duration}s {title}".strip())
+        signal_type = signal.get("type", "tab_change")
+        signal_lines.append(f"- {created_at}: {signal_type} {domain} for {duration}s {title}".strip())
 
     activity = "\n".join(signal_lines) or "No browser signals were recorded in the latest window."
     response = client.messages.create(

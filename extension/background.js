@@ -2,6 +2,7 @@ const ANCHOR_ORIGIN = 'http://localhost:8000';
 const AGENT_URL = `${ANCHOR_ORIGIN}/events`;
 
 let activeTab = { domain: null, title: '', url: '', tabId: null, windowId: null, startedAt: null };
+let lastActiveSignalAt = 0;
 
 function extractDomain(url) {
   try {
@@ -38,6 +39,35 @@ async function writeLiveSignal(type, payload) {
   const session = await getCurrentSession();
   if (!session) return;
   await postEvent(type, payload);
+}
+
+function normalizeTab(tab) {
+  return {
+    domain: extractDomain(tab.url),
+    title: tab.title || '',
+    url: tab.url || '',
+    tabId: tab.id || null,
+    windowId: tab.windowId || null,
+    startedAt: Date.now(),
+  };
+}
+
+async function reportActiveTab(reason) {
+  if (!activeTab.domain) return;
+  const now = Date.now();
+  const durationSec = activeTab.startedAt ? (now - activeTab.startedAt) / 1000 : 0;
+  if (reason === 'heartbeat' && now - lastActiveSignalAt < 9500) return;
+  lastActiveSignalAt = now;
+  await writeLiveSignal('tab_active', {
+    domain: activeTab.domain,
+    title: activeTab.title || '',
+    url: activeTab.url || '',
+    tabId: activeTab.tabId || 0,
+    windowId: activeTab.windowId || 0,
+    durationSec,
+    duration_sec: durationSec,
+    reason,
+  });
 }
 
 async function captureOpenTabsSnapshot() {
@@ -88,15 +118,8 @@ async function flushActiveTab() {
 chrome.tabs.onActivated.addListener(async (info) => {
   await flushActiveTab();
   const tab = await chrome.tabs.get(info.tabId);
-  const domain = extractDomain(tab.url);
-  activeTab = {
-    domain,
-    title: tab.title || '',
-    url: tab.url || '',
-    tabId: tab.id || null,
-    windowId: tab.windowId || null,
-    startedAt: Date.now(),
-  };
+  activeTab = normalizeTab(tab);
+  await reportActiveTab('activated');
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -104,15 +127,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
     if (!tabs[0] || tabs[0].id !== tabId) return;
     await flushActiveTab();
-    const domain = extractDomain(tab.url);
-    activeTab = {
-      domain,
-      title: tab.title || '',
-      url: tab.url || '',
-      tabId: tab.id || null,
-      windowId: tab.windowId || null,
-      startedAt: Date.now(),
-    };
+    activeTab = normalizeTab(tab);
+    await reportActiveTab('updated');
   });
 });
 
@@ -121,24 +137,22 @@ chrome.alarms.create('heartbeat', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== 'heartbeat') return;
   if (!activeTab.domain) return;
-  await flushActiveTab();
+  await reportActiveTab('heartbeat');
   await captureOpenTabsSnapshot();
-  // Reset start time so next heartbeat reports incremental time
-  activeTab.startedAt = Date.now();
 });
+
+setInterval(() => {
+  reportActiveTab('heartbeat').catch((error) => {
+    console.warn('Anchor active tab heartbeat failed', error);
+  });
+}, 10_000);
 
 async function initializeActiveTab() {
   chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
     const tab = tabs[0];
     if (!tab) return;
-    activeTab = {
-      domain: extractDomain(tab.url),
-      title: tab.title || '',
-      url: tab.url || '',
-      tabId: tab.id || null,
-      windowId: tab.windowId || null,
-      startedAt: Date.now(),
-    };
+    activeTab = normalizeTab(tab);
+    await reportActiveTab('startup');
     await captureOpenTabsSnapshot();
   });
 }
