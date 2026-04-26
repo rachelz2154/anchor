@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Anchor — Agent Dashboard</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --surface: #161616;
+    --border: #2a2a2a;
+    --gold: #f5c842;
+    --gold-dim: #8a6e1a;
+    --text: #e8e8e8;
+    --text-dim: #666;
+    --green: #4caf6e;
+    --red: #e05555;
+    --blue: #5599e0;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  header .logo { font-size: 20px; color: var(--gold); font-weight: 700; letter-spacing: 1px; }
+  header .tagline { color: var(--text-dim); font-size: 11px; }
+  header .ws-dot {
+    margin-left: auto;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+    transition: background 0.3s;
+  }
+  header .ws-dot.connected { background: var(--green); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto;
+    gap: 1px;
+    background: var(--border);
+    height: calc(100vh - 57px);
+  }
+
+  .panel {
+    background: var(--bg);
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .panel-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--gold);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ── Session panel ── */
+  #session-panel { grid-column: 1 / -1; flex-direction: row; align-items: flex-start; flex-wrap: wrap; gap: 16px; }
+
+  .session-status {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  #session-intent {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  #session-meta { color: var(--text-dim); font-size: 11px; }
+
+  .mode-pills { display: flex; gap: 6px; }
+  .mode-pill {
+    padding: 4px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 11px;
+    font-family: inherit;
+    background: transparent;
+    color: var(--text-dim);
+    transition: all 0.2s;
+  }
+  .mode-pill.active { border-color: var(--gold); color: var(--gold); background: rgba(245,200,66,0.08); }
+
+  .session-controls { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+
+  input[type="text"] {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 12px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    width: 260px;
+    outline: none;
+  }
+  input[type="text"]:focus { border-color: var(--gold); }
+  input[type="text"]::placeholder { color: var(--text-dim); }
+
+  .btn {
+    padding: 7px 18px;
+    border-radius: 6px;
+    border: none;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn-gold { background: var(--gold); color: #000; }
+  .btn-dim { background: var(--surface); color: var(--text-dim); border: 1px solid var(--border); }
+
+  /* ── Signals feed ── */
+  .event-list { display: flex; flex-direction: column; gap: 4px; }
+
+  .event-item {
+    display: flex;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    background: var(--surface);
+    font-size: 11px;
+    align-items: baseline;
+  }
+
+  .event-time { color: var(--text-dim); min-width: 56px; }
+  .event-source {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .src-chrome { background: rgba(85,153,224,0.15); color: var(--blue); }
+  .src-glasses { background: rgba(245,200,66,0.15); color: var(--gold); }
+  .src-simulator { background: rgba(76,175,110,0.15); color: var(--green); }
+  .event-desc { color: var(--text); flex: 1; }
+
+  /* ── Reasoning history ── */
+  .reasoning-history {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  .reasoning-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    transition: border-color 0.3s;
+  }
+  .reasoning-card.latest { border-color: #3a3a3a; }
+  .reasoning-card.drift { border-left: 3px solid var(--red); }
+  .reasoning-card.on-track { border-left: 3px solid var(--green); }
+  .reasoning-card.checkpoint { border-left: 3px solid var(--gold); }
+
+  .rc-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .rc-time { color: var(--text-dim); font-size: 10px; }
+  .rc-status {
+    font-size: 10px; font-weight: 700; padding: 2px 7px;
+    border-radius: 3px; letter-spacing: 0.5px;
+  }
+  .rc-status.drift { background: rgba(224,85,85,0.15); color: var(--red); }
+  .rc-status.on-track { background: rgba(76,175,110,0.15); color: var(--green); }
+  .rc-conf { margin-left: auto; color: var(--text-dim); font-size: 10px; }
+
+  .rc-bar { height: 3px; background: var(--border); border-radius: 2px; margin-bottom: 7px; overflow: hidden; }
+  .rc-bar-fill { height: 100%; border-radius: 2px; transition: width 0.5s ease; }
+
+  .rc-reasoning { color: var(--text-dim); font-size: 11px; font-style: italic; margin-bottom: 5px; }
+
+  .rc-signals { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+  .rc-signal-tag {
+    font-size: 9px; padding: 2px 6px; border-radius: 3px;
+    background: rgba(255,255,255,0.04); color: var(--text-dim); border: 1px solid var(--border);
+  }
+  .rc-action { font-size: 10px; color: var(--gold); margin-top: 5px; }
+
+  /* Highlight signal row when it contributed to a reasoning decision */
+  .event-item.triggered {
+    border: 1px solid rgba(245,200,66,0.4);
+    background: rgba(245,200,66,0.05);
+    transition: all 0.3s;
+  }
+
+  /* ── Checkpoint popup ── */
+  #checkpoint-popup {
+    display: none;
+    position: fixed;
+    top: 80px; right: 24px;
+    width: 290px;
+    background: var(--surface);
+    border: 1px solid var(--gold);
+    border-radius: 12px;
+    padding: 20px;
+    z-index: 100;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  }
+  #checkpoint-popup.visible { display: block; }
+  .cp-title { font-size: 18px; font-weight: 700; color: var(--gold); margin-bottom: 4px; }
+  .cp-msg { color: var(--text-dim); font-size: 12px; margin-bottom: 12px; }
+  .cp-countdown {
+    font-size: 10px; color: var(--text-dim);
+    margin-bottom: 12px; letter-spacing: 0.5px;
+  }
+  .cp-countdown span { color: var(--gold); font-weight: 700; }
+  .cp-buttons { display: flex; flex-direction: column; gap: 8px; }
+  .btn-continue { background: var(--gold); color: #000; width: 100%; padding: 10px; border-radius: 8px; }
+  .btn-switch { background: transparent; color: var(--text); border: 1px solid var(--border); width: 100%; padding: 10px; border-radius: 8px; }
+
+  /* ── Memory table ── */
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { text-align: left; color: var(--text-dim); padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: 600; }
+  td { padding: 5px 8px; border-bottom: 1px solid #1c1c1c; }
+  .drift-high { color: var(--red); }
+  .drift-low { color: var(--green); }
+
+  /* ── Intervention log ── */
+  .intervention-item {
+    display: flex;
+    gap: 8px;
+    padding: 6px 8px;
+    background: var(--surface);
+    border-radius: 4px;
+    font-size: 11px;
+    align-items: center;
+  }
+  .resp-continue { color: var(--green); }
+  .resp-switch { color: var(--red); }
+  .resp-ignored { color: var(--text-dim); }
+
+  .empty { color: var(--text-dim); font-size: 11px; padding: 8px 0; }
+
+  #agent-status {
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    background: rgba(245,200,66,0.08);
+    color: var(--gold-dim);
+    border: 1px solid rgba(245,200,66,0.15);
+    display: none;
+  }
+  #agent-status.visible { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">⚓ Anchor</span>
+  <span class="tagline">On purpose?</span>
+  <div class="ws-dot" id="ws-dot"></div>
+</header>
+
+<div class="grid">
+
+  <!-- Session panel (full width) -->
+  <div class="panel" id="session-panel">
+    <div class="panel-title" style="width:100%">Focus Session</div>
+    <div class="session-status">
+      <div id="session-intent" style="color:var(--text-dim)">No active session</div>
+      <div id="session-meta"></div>
+      <div class="mode-pills">
+        <button class="mode-pill" data-mode="light">Light</button>
+        <button class="mode-pill active" data-mode="deep">Deep Work</button>
+        <button class="mode-pill" data-mode="locked">Locked In</button>
+      </div>
+    </div>
+    <div class="session-controls">
+      <input type="text" id="intent-input" placeholder="What are you working on?">
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-gold" id="btn-start">Start Session</button>
+        <button class="btn btn-dim" id="btn-end">End</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Signals feed -->
+  <div class="panel">
+    <div class="panel-title">Live Signals</div>
+    <span id="agent-status">Agent is thinking…</span>
+    <div class="event-list" id="event-list">
+      <div class="empty">Waiting for signals…</div>
+    </div>
+  </div>
+
+  <!-- Agent reasoning -->
+  <div class="panel">
+    <div class="panel-title">Agent Reasoning <span id="reasoning-count" style="color:var(--text-dim);font-size:9px;font-weight:400;margin-left:6px"></span></div>
+    <div class="reasoning-history" id="reasoning-history">
+      <div class="empty">No analysis yet.</div>
+    </div>
+  </div>
+
+  <!-- Memory table -->
+  <div class="panel">
+    <div class="panel-title">Memory Layer</div>
+    <table id="memory-table">
+      <thead>
+        <tr><th>Domain</th><th>Intent</th><th>Mode</th><th>Checks</th><th>Drift %</th></tr>
+      </thead>
+      <tbody><tr><td colspan="5" class="empty">No memory yet.</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- Intervention log -->
+  <div class="panel">
+    <div class="panel-title">Intervention Log</div>
+    <div id="intervention-list">
+      <div class="empty">No interventions yet.</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Checkpoint popup (simulates glasses display) -->
+<div id="checkpoint-popup">
+  <div class="cp-title">⚓ On purpose?</div>
+  <div class="cp-msg" id="cp-msg">You've been off-track. Continue or switch intentionally.</div>
+  <div class="cp-countdown">Auto-dismissing in <span id="cp-timer">60</span>s</div>
+  <div class="cp-buttons">
+    <button class="btn btn-continue" id="btn-continue">▶ Continue focus</button>
+    <button class="btn btn-switch" id="btn-switch">↺ Switch task</button>
+  </div>
+</div>
+
+<script>
+  const API = '';
+  let ws = null;
+  let selectedMode = 'deep';
+  let activeDriftCheckId = null;
+  let sessionStartTime = null;
+  let sessionTimerInterval = null;
+  let checkpointTimerInterval = null;
+  let reasoningCount = 0;
+  let recentEventEls = [];   // last 10 event DOM elements for signal highlighting
+
+  // ── WebSocket ────────────────────────────────────────────────────────────
+
+  function connect() {
+    ws = new WebSocket(`ws://${location.host}/ws`);
+
+    ws.onopen = () => {
+      document.getElementById('ws-dot').classList.add('connected');
+      loadMemory();
+    };
+
+    ws.onclose = () => {
+      document.getElementById('ws-dot').classList.remove('connected');
+      setTimeout(connect, 2000);
+    };
+
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      handleMessage(msg);
+    };
+  }
+
+  function handleMessage(msg) {
+    switch (msg.type) {
+      case 'session_started':
+        onSessionStarted(msg);
+        break;
+      case 'session_ended':
+        onSessionEnded();
+        break;
+      case 'new_event':
+        addEventRow(msg.source, msg.event_type, msg.payload);
+        break;
+      case 'agent_thinking':
+        showAgentStatus(msg.message);
+        break;
+      case 'reasoning_update':
+        updateReasoning(msg);
+        hideAgentStatus();
+        break;
+      case 'checkpoint_fired':
+        showCheckpoint(msg);
+        addIntervention(msg.drift_check_id, msg.message, null);
+        break;
+      case 'checkpoint_response':
+        updateIntervention(msg.drift_check_id, msg.response);
+        loadMemory();
+        break;
+      case 'agent_error':
+        hideAgentStatus();
+        console.error('Agent error:', msg.message);
+        break;
+    }
+  }
+
+  // ── Session ──────────────────────────────────────────────────────────────
+
+  function onSessionStarted(msg) {
+    document.getElementById('session-intent').textContent = msg.intent;
+    document.getElementById('session-intent').style.color = 'var(--text)';
+    sessionStartTime = Date.now();
+    clearInterval(sessionTimerInterval);
+    sessionTimerInterval = setInterval(updateTimer, 1000);
+    updateTimer();
+    updateModePill(msg.mode);
+  }
+
+  function onSessionEnded() {
+    document.getElementById('session-intent').textContent = 'No active session';
+    document.getElementById('session-intent').style.color = 'var(--text-dim)';
+    document.getElementById('session-meta').textContent = '';
+    clearInterval(sessionTimerInterval);
+    sessionStartTime = null;
+  }
+
+  function updateTimer() {
+    if (!sessionStartTime) return;
+    const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
+    const m = Math.floor(elapsed / 60), s = elapsed % 60;
+    document.getElementById('session-meta').textContent =
+      `${selectedMode.toUpperCase()} · ${m}:${s.toString().padStart(2,'0')} elapsed`;
+  }
+
+  // ── Controls ─────────────────────────────────────────────────────────────
+
+  document.querySelectorAll('.mode-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      selectedMode = btn.dataset.mode;
+      updateModePill(selectedMode);
+    });
+  });
+
+  function updateModePill(mode) {
+    selectedMode = mode;
+    document.querySelectorAll('.mode-pill').forEach(p => {
+      p.classList.toggle('active', p.dataset.mode === mode);
+    });
+  }
+
+  document.getElementById('btn-start').addEventListener('click', async () => {
+    const intent = document.getElementById('intent-input').value.trim();
+    if (!intent) return;
+    await fetch('/session/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent, mode: selectedMode }),
+    });
+    document.getElementById('intent-input').value = '';
+    document.getElementById('event-list').innerHTML = '<div class="empty">Waiting for signals…</div>';
+    document.getElementById('intervention-list').innerHTML = '<div class="empty">No interventions yet.</div>';
+    document.getElementById('reasoning-history').innerHTML = '<div class="empty">No analysis yet.</div>';
+    reasoningCount = 0;
+    recentEventEls = [];
+    document.getElementById('reasoning-count').textContent = '';
+  });
+
+  document.getElementById('btn-end').addEventListener('click', async () => {
+    await fetch('/session/end', { method: 'POST' });
+  });
+
+  // ── Events feed ──────────────────────────────────────────────────────────
+
+  function addEventRow(source, type, payload) {
+    const list = document.getElementById('event-list');
+    const empty = list.querySelector('.empty');
+    if (empty) empty.remove();
+
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const desc = formatEventDesc(type, payload);
+
+    const item = document.createElement('div');
+    item.className = 'event-item';
+    item.dataset.desc = desc;
+    item.innerHTML = `
+      <span class="event-time">${now}</span>
+      <span class="event-source src-${source}">${source}</span>
+      <span class="event-desc">${desc}</span>
+    `;
+    list.prepend(item);
+
+    // Track for signal trace
+    recentEventEls.unshift(item);
+    if (recentEventEls.length > 10) recentEventEls.pop();
+
+    // Cap at 40 items
+    while (list.children.length > 40) list.removeChild(list.lastChild);
+  }
+
+  function formatEventDesc(type, payload) {
+    if (type === 'tab_change') return `${payload.domain || 'unknown'} — ${Math.round(payload.duration_sec || 0)}s`;
+    if (type === 'accel_snapshot') return payload.summary || 'motion data';
+    if (type === 'idle') return `Idle ${Math.round(payload.duration_sec || 0)}s`;
+    if (type === 'app_switch') return `${payload.from || '?'} → ${payload.to || '?'}`;
+    return JSON.stringify(payload).slice(0, 60);
+  }
+
+  // ── Reasoning history ────────────────────────────────────────────────────
+
+  function updateReasoning(msg) {
+    const history = document.getElementById('reasoning-history');
+    const empty = history.querySelector('.empty');
+    if (empty) empty.remove();
+
+    // Un-highlight previous "latest"
+    history.querySelectorAll('.reasoning-card.latest').forEach(c => c.classList.remove('latest'));
+
+    reasoningCount++;
+    document.getElementById('reasoning-count').textContent = `${reasoningCount} checks`;
+
+    const pct = Math.round(msg.confidence * 100);
+    const isDrift = msg.is_drift;
+    const cardClass = msg.send_checkpoint ? 'checkpoint' : (isDrift ? 'drift' : 'on-track');
+    const statusClass = isDrift ? 'drift' : 'on-track';
+    const statusLabel = isDrift ? '⚠ DRIFT' : '✓ ON TRACK';
+    const barColor = isDrift ? 'var(--red)' : 'var(--green)';
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    // Capture signal snapshot (last 5 events at time of reasoning)
+    const signalTags = recentEventEls.slice(0, 5).map(el =>
+      `<span class="rc-signal-tag">${el.dataset.desc || ''}</span>`
+    ).join('');
+
+    const card = document.createElement('div');
+    card.className = `reasoning-card ${cardClass} latest`;
+    card.innerHTML = `
+      <div class="rc-header">
+        <span class="rc-time">${now}</span>
+        <span class="rc-status ${statusClass}">${statusLabel}</span>
+        <span class="rc-conf">${pct}% confidence</span>
+      </div>
+      <div class="rc-bar"><div class="rc-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+      <div class="rc-reasoning">${msg.reasoning}</div>
+      ${signalTags ? `<div class="rc-signals">${signalTags}</div>` : ''}
+      ${msg.send_checkpoint ? `<div class="rc-action">→ Checkpoint sent to glasses</div>` : ''}
+    `;
+    history.prepend(card);
+
+    // Highlight the signals that were considered
+    if (isDrift) {
+      recentEventEls.slice(0, 5).forEach(el => {
+        el.classList.add('triggered');
+        setTimeout(() => el.classList.remove('triggered'), 4000);
+      });
+    }
+
+    // Cap history at 20 cards
+    while (history.children.length > 20) history.removeChild(history.lastChild);
+  }
+
+  function showAgentStatus(msg) {
+    const el = document.getElementById('agent-status');
+    el.textContent = msg;
+    el.classList.add('visible');
+  }
+
+  function hideAgentStatus() {
+    document.getElementById('agent-status').classList.remove('visible');
+  }
+
+  // ── Checkpoint popup with auto-dismiss ───────────────────────────────────
+
+  function showCheckpoint(msg) {
+    activeDriftCheckId = msg.drift_check_id;
+    document.getElementById('cp-msg').textContent = msg.message;
+    document.getElementById('checkpoint-popup').classList.add('visible');
+
+    // 60s countdown → auto-dismiss as "ignored"
+    let remaining = 60;
+    document.getElementById('cp-timer').textContent = remaining;
+    clearInterval(checkpointTimerInterval);
+    checkpointTimerInterval = setInterval(() => {
+      remaining--;
+      document.getElementById('cp-timer').textContent = remaining;
+      if (remaining <= 0) {
+        clearInterval(checkpointTimerInterval);
+        sendResponse('ignored');
+      }
+    }, 1000);
+  }
+
+  function hideCheckpoint() {
+    clearInterval(checkpointTimerInterval);
+    document.getElementById('checkpoint-popup').classList.remove('visible');
+    activeDriftCheckId = null;
+  }
+
+  async function sendResponse(response) {
+    if (activeDriftCheckId == null) return;
+    const id = activeDriftCheckId;
+    hideCheckpoint();
+    await fetch(`/checkpoint/${id}/response`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ response }),
+    });
+  }
+
+  document.getElementById('btn-continue').addEventListener('click', () => sendResponse('continue'));
+  document.getElementById('btn-switch').addEventListener('click', () => sendResponse('switch'));
+
+  // ── Intervention log ─────────────────────────────────────────────────────
+
+  const interventions = {};
+
+  function addIntervention(id, message, response) {
+    const list = document.getElementById('intervention-list');
+    const empty = list.querySelector('.empty');
+    if (empty) empty.remove();
+
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const item = document.createElement('div');
+    item.className = 'intervention-item';
+    item.id = `intervention-${id}`;
+    item.innerHTML = `
+      <span style="color:var(--text-dim);min-width:56px">${now}</span>
+      <span style="flex:1">${message}</span>
+      <span class="resp-${response || 'pending'}" id="resp-${id}">${response || '…'}</span>
+    `;
+    list.prepend(item);
+    interventions[id] = item;
+  }
+
+  function updateIntervention(id, response) {
+    const el = document.getElementById(`resp-${id}`);
+    if (el) {
+      el.textContent = response;
+      el.className = `resp-${response}`;
+    }
+  }
+
+  // ── Memory table ─────────────────────────────────────────────────────────
+
+  async function loadMemory() {
+    const rows = await fetch('/memory').then(r => r.json());
+    const tbody = document.querySelector('#memory-table tbody');
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No memory yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const pct = r.total_checks ? Math.round((r.switched_count / r.total_checks) * 100) : 0;
+      const cls = pct > 60 ? 'drift-high' : 'drift-low';
+      return `<tr>
+        <td>${r.domain}</td>
+        <td>${r.intent_type}</td>
+        <td>${r.mode}</td>
+        <td>${r.total_checks}</td>
+        <td class="${cls}">${pct}%</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // ── Init ─────────────────────────────────────────────────────────────────
+
+  connect();
+
+  // Restore active session on page load
+  fetch('/session/current').then(r => r.json()).then(s => {
+    if (s && s.intent) {
+      onSessionStarted(s);
+      sessionStartTime = new Date(s.started_at + 'Z').getTime();
+    }
+  });
+</script>
+</body>
+</html>
