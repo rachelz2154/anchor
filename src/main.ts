@@ -74,6 +74,16 @@ async function bootstrap() {
     let lastGlassWriteAt = 0
     let glassWriteInFlight = false
 
+    // Distraction heuristic — first-pass values, calibrate from console.log('imu', ...)
+    // STILL_THRESHOLD: per-sample energy above which we count a sample as "moving"
+    // MOVING_FRAC_TRIGGER: fraction of the rolling window that must be moving to flip to Distracted
+    const STILL_THRESHOLD = 2
+    const WINDOW_MS = 60_000
+    const MOVING_FRAC_TRIGGER = 0.7
+    const MIN_SAMPLES = 30
+    let prev: { x: number; y: number; z: number } | null = null
+    const samples: { t: number; energy: number }[] = []
+
     bridge.onEvenHubEvent((event) => {
       const sys = event.sysEvent
       if (!sys || sys.eventType !== OsEventTypeList.IMU_DATA_REPORT || !sys.imuData) {
@@ -84,16 +94,48 @@ async function bootstrap() {
       const y = sys.imuData.y ?? 0
       const z = sys.imuData.z ?? 0
 
-      setStatus(`IMU  x: ${x.toFixed(2)}  y: ${y.toFixed(2)}  z: ${z.toFixed(2)}`)
+      let energy = 0
+      if (prev) {
+        const dx = x - prev.x
+        const dy = y - prev.y
+        const dz = z - prev.z
+        energy = Math.sqrt(dx * dx + dy * dy + dz * dz)
+      }
+      prev = { x, y, z }
 
       const now = performance.now()
+      samples.push({ t: now, energy })
+      while (samples.length > 0 && now - samples[0]!.t > WINDOW_MS) {
+        samples.shift()
+      }
+
+      let mode: 'Focus' | 'Distracted' = 'Focus'
+      let movingFrac = 0
+      if (samples.length >= MIN_SAMPLES) {
+        const movingCount = samples.filter((s) => s.energy > STILL_THRESHOLD).length
+        movingFrac = movingCount / samples.length
+        if (movingFrac > MOVING_FRAC_TRIGGER) {
+          mode = 'Distracted'
+        }
+      }
+
+      console.log('imu', { x, y, z, energy, mode, movingFrac, n: samples.length })
+      setStatus(
+        `${mode}  energy:${energy.toFixed(2)}  frac:${movingFrac.toFixed(2)}  ` +
+          `x:${x.toFixed(2)} y:${y.toFixed(2)} z:${z.toFixed(2)}`,
+      )
+
       if (glassWriteInFlight || now - lastGlassWriteAt < minGlassWriteIntervalMs) {
         return
       }
       lastGlassWriteAt = now
       glassWriteInFlight = true
 
-      const content = `Anchor — IMU\nx: ${x.toFixed(2)}\ny: ${y.toFixed(2)}\nz: ${z.toFixed(2)}`
+      const content =
+        `Anchor — ${mode}\n` +
+        `energy: ${energy.toFixed(2)}\n` +
+        `x: ${x.toFixed(2)}  y: ${y.toFixed(2)}\n` +
+        `z: ${z.toFixed(2)}`
       bridge
         .textContainerUpgrade(
           new TextContainerUpgrade({
