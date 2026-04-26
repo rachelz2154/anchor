@@ -3,3 +3,12 @@ dist/
 *.ehpk
 .DS_Store
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Project
+anchor.db
+.env
