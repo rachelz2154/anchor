@@ -1,6 +1,9 @@
 import {
   CreateStartUpPageContainer,
+  ImuReportPace,
+  OsEventTypeList,
   TextContainerProperty,
+  TextContainerUpgrade,
   waitForEvenAppBridge,
 } from '@evenrealities/even_hub_sdk'
 import './style.css'
@@ -13,11 +16,11 @@ if (!app) {
 
 app.innerHTML = `
   <main class="shell">
-    <p class="eyebrow">Even G2</p>
-    <h1>Hello World</h1>
+    <p class="eyebrow">Even G2 — Anchor</p>
+    <h1>IMU Probe</h1>
     <p class="body">
-      This app waits for the Even Hub bridge and sends a single full-screen text
-      container to the glasses.
+      Streams accelerometer x/y/z from the glasses and renders the latest sample
+      onto the display.
     </p>
     <p class="status" id="status">Waiting for the Even bridge...</p>
   </main>
@@ -49,7 +52,7 @@ async function bootstrap() {
       paddingLength: 12,
       containerID: 1,
       containerName: 'hello',
-      content: 'Hello World',
+      content: 'Anchor — IMU\nwaiting for samples…',
       isEventCapture: 1,
     })
 
@@ -60,12 +63,53 @@ async function bootstrap() {
       }),
     )
 
-    if (result === 0) {
-      setStatus('Hello World sent to the Even G2 display.')
+    if (result !== 0) {
+      setStatus(`The bridge connected, but page creation failed with code ${result}.`)
       return
     }
 
-    setStatus(`The bridge connected, but page creation failed with code ${result}.`)
+    // textContainerUpgrade is async and we don't want to flood BLE with writes.
+    // IMU at P100 = 10 Hz; cap the on-glass refresh at 5 Hz.
+    const minGlassWriteIntervalMs = 200
+    let lastGlassWriteAt = 0
+    let glassWriteInFlight = false
+
+    bridge.onEvenHubEvent((event) => {
+      const sys = event.sysEvent
+      if (!sys || sys.eventType !== OsEventTypeList.IMU_DATA_REPORT || !sys.imuData) {
+        return
+      }
+
+      const x = sys.imuData.x ?? 0
+      const y = sys.imuData.y ?? 0
+      const z = sys.imuData.z ?? 0
+
+      setStatus(`IMU  x: ${x.toFixed(2)}  y: ${y.toFixed(2)}  z: ${z.toFixed(2)}`)
+
+      const now = performance.now()
+      if (glassWriteInFlight || now - lastGlassWriteAt < minGlassWriteIntervalMs) {
+        return
+      }
+      lastGlassWriteAt = now
+      glassWriteInFlight = true
+
+      const content = `Anchor — IMU\nx: ${x.toFixed(2)}\ny: ${y.toFixed(2)}\nz: ${z.toFixed(2)}`
+      bridge
+        .textContainerUpgrade(
+          new TextContainerUpgrade({
+            containerID: 1,
+            containerName: 'hello',
+            content,
+          }),
+        )
+        .catch((err) => console.warn('textContainerUpgrade failed', err))
+        .finally(() => {
+          glassWriteInFlight = false
+        })
+    })
+
+    await bridge.imuControl(true, ImuReportPace.P100)
+    setStatus('IMU streaming. Move your head!')
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     setStatus(`Failed to initialize the Even bridge: ${message}`)
