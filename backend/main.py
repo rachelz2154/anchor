@@ -204,8 +204,8 @@ async def start_session(body: SessionStart):
     try:
         set_current_session(session_doc)
     except (FirestoreConfigError, FirestoreRequestError) as exc:
-        await broadcast({"type": "agent_error", "message": str(exc)})
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # Firestore is optional — session still works via SQLite
+        await broadcast({"type": "agent_warning", "message": f"Firestore unavailable: {exc}"})
     await broadcast({"type": "session_started", "intent": body.intent, "mode": body.mode, "session_id": session_id})
     return {"session_id": session_id}
 
@@ -222,8 +222,7 @@ async def end_session():
     try:
         set_current_session({"active": False, "endedAt": datetime.now().isoformat(), "source": "anchor-dashboard"})
     except (FirestoreConfigError, FirestoreRequestError) as exc:
-        await broadcast({"type": "agent_error", "message": str(exc)})
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        await broadcast({"type": "agent_warning", "message": f"Firestore unavailable: {exc}"})
     await broadcast({"type": "session_ended"})
     return {"ok": True}
 
