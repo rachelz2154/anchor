@@ -328,7 +328,7 @@
     <div class="session-status">
       <div id="session-intent" style="color:var(--text-dim)">No active session</div>
       <div id="session-meta"></div>
-      <div id="latest-message">No Firestore focus message yet.</div>
+      <div id="latest-message"></div>
       <div class="mode-pills">
         <button class="mode-pill" data-mode="light">Light</button>
         <button class="mode-pill active" data-mode="deep">Deep Work</button>
@@ -654,7 +654,7 @@
   function renderFocusMessage(message) {
     const el = document.getElementById('latest-message');
     if (!message || !message.message) {
-      el.textContent = 'No Firestore focus message yet.';
+      el.textContent = '';
       el.className = '';
       return;
     }
