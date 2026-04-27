@@ -409,6 +409,7 @@
   let checkpointTimerInterval = null;
   let reasoningCount = 0;
   let recentEventEls = [];   // last 10 event DOM elements for signal highlighting
+  let sessionActive = false;
 
   // ── WebSocket ────────────────────────────────────────────────────────────
 
@@ -460,10 +461,9 @@
       case 'agent_error':
         hideAgentStatus();
         console.error('Agent error:', msg.message);
-        renderFocusMessage({ userOnTrack: false, message: msg.message });
         break;
       case 'focus_message':
-        renderFocusMessage(msg.message);
+        if (sessionActive) renderFocusMessage(msg.message);
         break;
     }
   }
@@ -471,6 +471,7 @@
   // ── Session ──────────────────────────────────────────────────────────────
 
   function onSessionStarted(msg) {
+    sessionActive = true;
     document.getElementById('session-intent').textContent = msg.intent;
     document.getElementById('session-intent').style.color = 'var(--text)';
     sessionStartTime = Date.now();
@@ -481,12 +482,13 @@
   }
 
   function onSessionEnded() {
+    sessionActive = false;
     document.getElementById('session-intent').textContent = 'No active session';
     document.getElementById('session-intent').style.color = 'var(--text-dim)';
     document.getElementById('session-meta').textContent = '';
     clearInterval(sessionTimerInterval);
     sessionStartTime = null;
-    renderFocusMessage({ message: 'No active session.', userOnTrack: false });
+    renderFocusMessage(null);
   }
 
   function updateTimer() {
@@ -571,7 +573,7 @@
   }
 
   function formatEventDesc(type, payload) {
-    if (type === 'tab_change') {
+    if (type === 'tab_change' || type === 'tab_active') {
       const domain = payload.domain || 'unknown';
       const dur = Math.round(payload.durationSec || payload.duration_sec || 0);
       const title = payload.title ? `· "${payload.title.slice(0, 48)}${payload.title.length > 48 ? '…' : ''}"` : '';
@@ -818,6 +820,7 @@
     fetch('/session/current').then(r => r.json()),
     fetch('/memory').then(r => r.json()),
   ]).then(([s, mem]) => {
+    renderFocusMessage(null);
     // Seed domainRelevanceMap from persisted memory
     mem.forEach(r => { if (r.last_relevance) domainRelevanceMap[r.domain] = r.last_relevance; });
 
@@ -826,10 +829,6 @@
       sessionStartTime = new Date(s.started_at + 'Z').getTime();
     }
   });
-  fetch('/messages/latest')
-    .then(r => r.ok ? r.json() : {})
-    .then(renderFocusMessage)
-    .catch(() => renderFocusMessage(null));
 </script>
 </body>
 </html>

@@ -16,6 +16,7 @@ from .reasoning import check_user_on_track
 
 CHECK_INTERVAL_SECONDS = int(os.getenv("FIRESTORE_CHECK_INTERVAL_SECONDS", "10"))
 SIGNAL_WINDOW_SECONDS = int(os.getenv("FOCUS_SIGNAL_WINDOW_SECONDS", "120"))
+_last_check_key: tuple[Any, ...] | None = None
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -44,8 +45,10 @@ def _signal_is_fresh(signal: dict[str, Any]) -> bool:
 
 
 async def run_focus_check_once() -> dict[str, Any] | None:
+    global _last_check_key
     session = get_current_session()
     if not session or not session.get("active"):
+        _last_check_key = None
         return None
 
     signals = [
@@ -53,6 +56,20 @@ async def run_focus_check_once() -> dict[str, Any] | None:
         for signal in get_recent_live_signals()
         if _session_signal_matches(session, signal) and _signal_is_fresh(signal)
     ]
+    signal_fingerprint = tuple(
+        (
+            signal.get("id"),
+            signal.get("createdAt"),
+            signal.get("type"),
+            signal.get("domain"),
+            signal.get("durationSec", signal.get("duration_sec")),
+        )
+        for signal in signals[:10]
+    )
+    check_key = (session.get("sessionId"), session.get("intent"), session.get("mode"), signal_fingerprint)
+    if check_key == _last_check_key:
+        return None
+    _last_check_key = check_key
     try:
         result = await asyncio.to_thread(check_user_on_track, session, signals)
         user_on_track = bool(result["userOnTrack"])
@@ -62,17 +79,16 @@ async def run_focus_check_once() -> dict[str, Any] | None:
         user_on_track = False
         message_text = f"Focus check unavailable: {exc}"
         status = "llm_error"
-    message_id, message = create_message(
-        {
-            "userOnTrack": user_on_track,
-            "message": message_text,
-            "status": status,
-            "sessionId": session.get("sessionId"),
-            "sessionIntent": session.get("intent", ""),
-            "sessionMode": session.get("mode", "deep"),
-            "signalCount": len(signals),
-        }
-    )
+    message_data = {
+        "userOnTrack": user_on_track,
+        "message": message_text,
+        "status": status,
+        "sessionId": session.get("sessionId"),
+        "sessionIntent": session.get("intent", ""),
+        "sessionMode": session.get("mode", "deep"),
+        "signalCount": len(signals),
+    }
+    message_id, message = create_message(message_data)
     return {"id": message_id, **message}
 
 
