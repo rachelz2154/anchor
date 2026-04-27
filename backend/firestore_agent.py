@@ -17,6 +17,8 @@ from .reasoning import check_user_on_track
 CHECK_INTERVAL_SECONDS = int(os.getenv("FIRESTORE_CHECK_INTERVAL_SECONDS", "15"))
 SIGNAL_WINDOW_SECONDS = int(os.getenv("FOCUS_SIGNAL_WINDOW_SECONDS", "120"))
 _last_check_key: tuple[Any, ...] | None = None
+_last_signal_cutoff_at: datetime | None = None
+_last_session_key: tuple[Any, ...] | None = None
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -44,18 +46,44 @@ def _signal_is_fresh(signal: dict[str, Any]) -> bool:
     return created_at >= datetime.now(timezone.utc) - timedelta(seconds=SIGNAL_WINDOW_SECONDS)
 
 
+def _signal_is_after_cutoff(signal: dict[str, Any], cutoff: datetime) -> bool:
+    created_at = _parse_time(signal.get("createdAt"))
+    if not created_at:
+        return False
+    return created_at > cutoff
+
+
 async def run_focus_check_once() -> dict[str, Any] | None:
-    global _last_check_key
+    global _last_check_key, _last_signal_cutoff_at, _last_session_key
     session = get_current_session()
     if not session or not session.get("active"):
         _last_check_key = None
+        _last_signal_cutoff_at = None
+        _last_session_key = None
         return None
 
+    now = datetime.now(timezone.utc)
+    session_key = (session.get("sessionId"), session.get("intent"), session.get("mode"))
+    if session_key != _last_session_key:
+        _last_check_key = None
+        _last_signal_cutoff_at = now - timedelta(seconds=CHECK_INTERVAL_SECONDS)
+        _last_session_key = session_key
+
+    cutoff = _last_signal_cutoff_at or now - timedelta(seconds=CHECK_INTERVAL_SECONDS)
     signals = [
         signal
         for signal in get_recent_live_signals()
-        if _session_signal_matches(session, signal) and _signal_is_fresh(signal)
+        if (
+            _session_signal_matches(session, signal)
+            and _signal_is_fresh(signal)
+            and _signal_is_after_cutoff(signal, cutoff)
+        )
     ]
+    _last_signal_cutoff_at = now
+    if not signals:
+        _last_check_key = None
+        return None
+
     signal_fingerprint = tuple(
         (
             signal.get("id"),

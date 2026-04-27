@@ -53,6 +53,9 @@ const GLASSES_IDLE_CONTENT = ''
 const FOCUS_PROMPT_YES_RESPONSE = "Ok, I'll check back in a few."
 const FOCUS_PROMPT_NO_RESPONSE = 'No worries. Take a breath. You can choose the next right step.'
 const BREAK_DURATION_MS = 5 * 60 * 1000
+const IMU_SIGNAL_INTERVAL_MS = 5_000
+const HEAD_DOWN_AXIS_THRESHOLD = -6
+const HEAD_DOWN_TRIGGER_SECONDS = 10
 
 const CLICK_EVENT = 0
 const SCROLL_TOP_EVENT = 1
@@ -210,7 +213,7 @@ const formatFocusPromptGlassContent = (message: FocusMessage | null, selectedCho
     : 'It looks like your focus may have shifted.'
   const yesLabel = selectedChoice === 'yes' ? '> Yes' : '  Yes'
   const noLabel = selectedChoice === 'no' ? '> No' : '  No'
-  return `${focusLine}\nNo shame. Just noticing.\n\n${yesLabel}\n${noLabel}\n\nOn purpose?`.trim()
+  return `${focusLine}\nNo shame. Just noticing.\n\nOn purpose?\n${yesLabel}\n${noLabel}`.trim()
 }
 
 const formatFocusPromptResponseGlassContent = (choice: FocusPromptChoice) => {
@@ -306,6 +309,45 @@ const startFocusSession = async () => {
   }
 }
 
+const clearFocusMessage = async () => {
+  const response = await fetch(`${ANCHOR_API_ORIGIN}/messages/clear`, { method: 'POST' })
+  if (!response.ok) {
+    throw new Error(`Unable to clear focus message: ${response.status}`)
+  }
+}
+
+const formatImuSignalSummary = (imu: ImuState) => {
+  const posture = imu.headDownSeconds >= HEAD_DOWN_TRIGGER_SECONDS
+    ? `possible head-down/phone posture for ${Math.round(imu.headDownSeconds)}s`
+    : 'no sustained head-down posture'
+  return `${imu.mode}; ${posture}; motion energy ${imu.energy.toFixed(2)}, moving ${(imu.movingFrac * 100).toFixed(0)}%`
+}
+
+const postImuSignal = async (imu: ImuState) => {
+  const response = await fetch(`${ANCHOR_API_ORIGIN}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source: 'glasses',
+      type: 'accel_snapshot',
+      payload: {
+        summary: formatImuSignalSummary(imu),
+        mode: imu.mode,
+        energy: Number(imu.energy.toFixed(3)),
+        movingFrac: Number(imu.movingFrac.toFixed(3)),
+        possibleHeadDown: imu.possibleHeadDown,
+        headDownSeconds: Number(imu.headDownSeconds.toFixed(1)),
+        x: Number(imu.x.toFixed(2)),
+        y: Number(imu.y.toFixed(2)),
+        z: Number(imu.z.toFixed(2)),
+      },
+    }),
+  })
+  if (!response.ok) {
+    throw new Error(`Unable to post IMU signal: ${response.status}`)
+  }
+}
+
 async function bootstrap() {
   try {
     const bridge = await waitForEvenAppBridge()
@@ -323,9 +365,12 @@ async function bootstrap() {
     let focusPromptState: FocusPromptState = 'idle'
     let selectedFocusPromptChoice: FocusPromptChoice = 'yes'
     let activeFocusPromptMessageKey = ''
+    let dismissedFocusPromptMessageKey = ''
     let breakState: BreakState = 'idle'
     let breakEndsAt = 0
     let breakTimerInterval: number | null = null
+    let lastImuSignalPostedAt = 0
+    let imuSignalPostInFlight = false
 
     const initialWelcomeContent = formatWelcomeGlassContent(welcomeState, selectedWelcomeChoice)
     const helloWorld = new TextContainerProperty({
@@ -423,8 +468,19 @@ async function bootstrap() {
     const refreshFocusMessage = async () => {
       try {
         latestFocusMessage = await fetchLatestFocusMessage()
+        const latestMessageKey = getFocusMessageKey(latestFocusMessage)
+        if (latestFocusMessage && latestMessageKey === dismissedFocusPromptMessageKey) {
+          latestFocusMessage = null
+          renderFocusMessage(null)
+          logGlassDebug('skipping dismissed focus message', { latestMessageKey })
+          return
+        }
         renderFocusMessage(latestFocusMessage)
         trackMessageChange(latestFocusMessage)
+        if (focusPromptState !== 'idle') {
+          logGlassDebug('skipping focus state update while prompt flow is active', { focusPromptState })
+          return
+        }
         if (breakState === 'active') {
           logGlassDebug('skipping focus prompt while break is active')
           return
@@ -447,6 +503,10 @@ async function bootstrap() {
         const message = error instanceof Error ? error.message : 'Unable to fetch Anchor message.'
         latestFocusMessage = { userOnTrack: false, message, status: 'fetch_error' }
         renderFocusMessage(latestFocusMessage)
+        if (focusPromptState !== 'idle') {
+          logGlassDebug('skipping fetch-error state update while prompt flow is active', { focusPromptState })
+          return
+        }
         if (breakState === 'active') {
           logGlassDebug('skipping fetch-error focus prompt while break is active')
           return
@@ -467,6 +527,7 @@ async function bootstrap() {
       activeSessionId = null
       latestFocusMessage = null
       inactiveRendered = true
+      dismissedFocusPromptMessageKey = ''
       stopBreakTimer()
       breakState = 'idle'
       breakEndsAt = 0
@@ -633,8 +694,17 @@ async function bootstrap() {
       }
       focusPromptState = 'answered'
       selectedFocusPromptChoice = choice
+      dismissedFocusPromptMessageKey = activeFocusPromptMessageKey
+      latestFocusMessage = null
+      renderFocusMessage(null)
       logGlassDebug('focus prompt choice confirmed', { choice })
       await writeGlasses(formatFocusPromptResponseGlassContent(choice))
+      try {
+        await clearFocusMessage()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to clear focus message.'
+        logGlassDebug('focus message clear failed', { message })
+      }
       window.setTimeout(() => {
         focusPromptState = 'idle'
         void writeGlasses(GLASSES_IDLE_CONTENT)
@@ -703,19 +773,16 @@ async function bootstrap() {
     }, 5_000)
 
     // Distraction heuristic — calibrated against real glasses (see imu_ref.md)
-    const STILL_THRESHOLD = 0.5
+    const STILL_THRESHOLD = 0.02
     const WINDOW_MS = 60_000
     const MOVING_FRAC_TRIGGER = 0.7
     const MIN_SAMPLES = 30
-    // y-axis < this threshold → head tilted down (phone/notebook posture)
-    const HEAD_DOWN_Y_THRESHOLD = -0.5
     // Post a motion snapshot every 30s, or immediately on mode flip
     const IMU_POST_INTERVAL_MS = 30_000
 
     let prev: { x: number; y: number; z: number } | null = null
     const samples: { t: number; energy: number }[] = []
-    let headDownSince: number | null = null
-    let imuSignalPostInFlight = false
+    let headDownStartedAt: number | null = null
     let lastImuPostAt = 0
     let lastPostedMode: 'Focus' | 'Distracted' | null = null
 
@@ -800,6 +867,14 @@ async function bootstrap() {
       prev = { x, y, z }
 
       const now = performance.now()
+      const possibleHeadDown = y <= HEAD_DOWN_AXIS_THRESHOLD
+      if (possibleHeadDown && headDownStartedAt === null) {
+        headDownStartedAt = now
+      } else if (!possibleHeadDown) {
+        headDownStartedAt = null
+      }
+      const headDownSeconds = headDownStartedAt === null ? 0 : (now - headDownStartedAt) / 1000
+
       samples.push({ t: now, energy })
       while (samples.length > 0 && now - samples[0]!.t > WINDOW_MS) {
         samples.shift()
@@ -815,16 +890,7 @@ async function bootstrap() {
         }
       }
 
-      // Head-down detection: track how long y has been below threshold
-      const possibleHeadDown = y < HEAD_DOWN_Y_THRESHOLD
-      if (possibleHeadDown && headDownSince === null) {
-        headDownSince = now
-      } else if (!possibleHeadDown) {
-        headDownSince = null
-      }
-      const headDownSeconds = headDownSince !== null ? (now - headDownSince) / 1000 : 0
-
-      latestImuState = { mode, energy, movingFrac, possibleHeadDown, headDownSeconds, x, y, z }
+      latestImuState = { mode, energy, movingFrac, x, y, z, possibleHeadDown, headDownSeconds }
 
       // Post to backend: every 30s OR immediately on mode flip
       const modeFlipped = lastPostedMode !== null && mode !== lastPostedMode

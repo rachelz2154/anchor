@@ -342,6 +342,12 @@ async def messages_latest():
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.post("/messages/clear")
+async def messages_clear():
+    await broadcast({"type": "focus_message", "message": {}})
+    return {"ok": True}
+
+
 @app.post("/agent/check-now")
 async def agent_check_now():
     try:
