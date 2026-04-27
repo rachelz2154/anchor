@@ -1,5 +1,11 @@
 import asyncio
+import base64
 import json
+import os
+import tempfile
+import urllib.error
+import urllib.request
+import wave
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -86,7 +92,91 @@ class FirestoreDocumentBody(BaseModel):
     data: dict
 
 
+class VoiceTranscriptionBody(BaseModel):
+    pcm_base64: str
+    sample_rate: int = 16000
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+def _pcm_to_wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
+    with tempfile.TemporaryFile() as wav_file:
+        with wave.open(wav_file, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(sample_rate)
+            writer.writeframes(pcm)
+        wav_file.seek(0)
+        return wav_file.read()
+
+
+def _multipart_body(fields: dict[str, str], files: dict[str, tuple[str, str, bytes]]) -> tuple[bytes, str]:
+    boundary = "anchor-whisper-boundary"
+    parts: list[bytes] = []
+    for name, value in fields.items():
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode("utf-8")
+        )
+    for name, (filename, content_type, data) in files.items():
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode("utf-8")
+            + data
+            + b"\r\n"
+        )
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(parts), boundary
+
+
+def _transcribe_with_whisper(wav_bytes: bytes) -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured")
+
+    body, boundary = _multipart_body(
+        {"model": "whisper-1", "response_format": "json"},
+        {"file": ("anchor.wav", "audio/wav", wav_bytes)},
+    )
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/audio/transcriptions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    text = payload.get("text", "")
+    return text if isinstance(text, str) else ""
+
+
+@app.post("/voice/transcribe")
+async def voice_transcribe(body: VoiceTranscriptionBody):
+    try:
+        pcm = base64.b64decode(body.pcm_base64, validate=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid PCM payload") from exc
+    if not pcm:
+        raise HTTPException(status_code=400, detail="Empty PCM payload")
+    wav_bytes = _pcm_to_wav_bytes(pcm, body.sample_rate)
+    text = await asyncio.to_thread(_transcribe_with_whisper, wav_bytes)
+    return {"text": text}
 
 @app.post("/session/start")
 async def start_session(body: SessionStart):
@@ -252,7 +342,7 @@ async def agent_check_now():
     if message:
         await broadcast({"type": "focus_message", "message": message})
         return message
-    return {"ok": False, "reason": "no active Firestore session"}
+    return {"ok": True, "reason": "no active session or no focus change"}
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────
@@ -261,10 +351,6 @@ async def agent_check_now():
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     _clients.append(ws)
-    # Send current session state on connect
-    session = get_active_session()
-    if session:
-        await ws.send_json({"type": "session_started", "intent": session["intent"], "mode": session["mode"]})
     try:
         while True:
             await ws.receive_text()

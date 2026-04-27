@@ -20,6 +20,13 @@ type FocusMessage = {
   createdAt?: string
 }
 
+type FocusSession = {
+  id?: number
+  intent?: string
+  mode?: string
+  active?: number | boolean
+}
+
 type ImuState = {
   mode: 'Focus' | 'Distracted'
   energy: number
@@ -29,6 +36,18 @@ type ImuState = {
   z: number
 }
 
+type WelcomeChoice = 'yes' | 'no'
+
+type WelcomeState = 'choosing' | 'starting' | 'focused' | 'declined'
+
+const CLICK_EVENT = 0
+const SCROLL_TOP_EVENT = 1
+const SCROLL_BOTTOM_EVENT = 2
+const DOUBLE_CLICK_EVENT = 3
+const FOREGROUND_ENTER_EVENT = 4
+const FOREGROUND_EXIT_EVENT = 5
+const ABNORMAL_EXIT_EVENT = 6
+
 if (!app) {
   throw new Error('Missing #app root element.')
 }
@@ -36,26 +55,59 @@ if (!app) {
 app.innerHTML = `
   <main class="shell">
     <p class="eyebrow">Even G2 — Anchor</p>
-    <h1>IMU Probe</h1>
+    <h1>Anchor</h1>
     <p class="body">
-      Shows the latest Anchor focus check from your browser activity and keeps
-      IMU status visible for debugging.
+      The startup prompt is on the glasses. Use G2 gestures to choose Yes or No.
     </p>
+    <section class="welcome-card choosing" id="welcome-card">
+      <p class="welcome-message" id="welcome-message">Glasses prompt: Yes selected.</p>
+      <p class="gesture-status" id="gesture-status">Waiting for G2 gesture input...</p>
+    </section>
+    <section class="event-card">
+      <p class="focus-label">Touch events</p>
+      <div class="event-feed" id="event-feed">
+        <div class="event-feed-item">Waiting for touchpad input...</div>
+      </div>
+    </section>
+    <section class="debug-card">
+      <p class="focus-label">Debug log</p>
+      <div class="debug-log" id="debug-log">
+        <div class="debug-log-item">Waiting for Anchor G2 debug logs...</div>
+      </div>
+    </section>
     <section class="focus-card" id="focus-card">
       <p class="focus-label">Latest focus check</p>
       <p class="focus-message" id="focus-message">Waiting for Anchor...</p>
       <p class="focus-meta" id="focus-meta">No message yet.</p>
+      <div class="focus-history" id="focus-history"></div>
     </section>
     <p class="status" id="status">Waiting for the Even bridge...</p>
   </main>
 `
 
 const statusNode = document.querySelector<HTMLParagraphElement>('#status')
+const welcomeCard = document.querySelector<HTMLElement>('#welcome-card')
+const welcomeMessageNode = document.querySelector<HTMLParagraphElement>('#welcome-message')
+const gestureStatusNode = document.querySelector<HTMLParagraphElement>('#gesture-status')
+const eventFeedNode = document.querySelector<HTMLDivElement>('#event-feed')
+const debugLogNode = document.querySelector<HTMLDivElement>('#debug-log')
 const focusCard = document.querySelector<HTMLElement>('#focus-card')
 const focusMessageNode = document.querySelector<HTMLParagraphElement>('#focus-message')
 const focusMetaNode = document.querySelector<HTMLParagraphElement>('#focus-meta')
+const focusHistoryNode = document.querySelector<HTMLDivElement>('#focus-history')
 
-if (!statusNode || !focusCard || !focusMessageNode || !focusMetaNode) {
+if (
+  !statusNode ||
+  !welcomeCard ||
+  !welcomeMessageNode ||
+  !gestureStatusNode ||
+  !eventFeedNode ||
+  !debugLogNode ||
+  !focusCard ||
+  !focusMessageNode ||
+  !focusMetaNode ||
+  !focusHistoryNode
+) {
   throw new Error('Missing required Anchor UI elements.')
 }
 
@@ -63,7 +115,84 @@ const setStatus = (message: string) => {
   statusNode.textContent = message
 }
 
-const formatGlassContent = (message: FocusMessage | null, imu: ImuState | null) => {
+const touchEventHistory: string[] = []
+const debugLogHistory: string[] = []
+
+const renderDebugLog = (message: string, data?: Record<string, unknown>) => {
+  const time = new Date().toLocaleTimeString()
+  const payload = data ? ` ${JSON.stringify(data)}` : ''
+  debugLogHistory.unshift(`${time} ${message}${payload}`)
+  while (debugLogHistory.length > 16) debugLogHistory.pop()
+  debugLogNode.replaceChildren(
+    ...debugLogHistory.map((item) => {
+      const row = document.createElement('div')
+      row.className = 'debug-log-item'
+      row.textContent = item
+      return row
+    }),
+  )
+}
+
+const renderTouchEvent = (eventType: number | undefined, containerName: string, source = 'unknown') => {
+  const time = new Date().toLocaleTimeString()
+  touchEventHistory.unshift(`${time} ${formatEventType(eventType)} from ${containerName} source:${source}`)
+  while (touchEventHistory.length > 8) touchEventHistory.pop()
+  eventFeedNode.innerHTML = touchEventHistory.map((item) => `<div class="event-feed-item">${item}</div>`).join('')
+}
+
+const formatEventType = (eventType: number | undefined) => {
+  if (eventType === undefined) return 'CLICK_EVENT'
+  if (eventType === CLICK_EVENT) return 'CLICK_EVENT'
+  if (eventType === SCROLL_TOP_EVENT) return 'SCROLL_TOP_EVENT'
+  if (eventType === SCROLL_BOTTOM_EVENT) return 'SCROLL_BOTTOM_EVENT'
+  if (eventType === DOUBLE_CLICK_EVENT) return 'DOUBLE_CLICK_EVENT'
+  if (eventType === FOREGROUND_ENTER_EVENT) return 'FOREGROUND_ENTER_EVENT'
+  if (eventType === FOREGROUND_EXIT_EVENT) return 'FOREGROUND_EXIT_EVENT'
+  if (eventType === ABNORMAL_EXIT_EVENT) return 'ABNORMAL_EXIT_EVENT'
+  return `event:${eventType}`
+}
+
+const isTouchEventType = (eventType: number | undefined) =>
+  eventType === undefined ||
+  eventType === CLICK_EVENT ||
+  eventType === SCROLL_TOP_EVENT ||
+  eventType === SCROLL_BOTTOM_EVENT ||
+  eventType === DOUBLE_CLICK_EVENT
+
+const logGlassDebug = (message: string, data?: Record<string, unknown>) => {
+  renderDebugLog(message, data)
+  if (data) {
+    console.log(`[anchor:g2] ${message}`, data)
+    return
+  }
+  console.log(`[anchor:g2] ${message}`)
+}
+
+const formatWelcomeGlassContent = (state: WelcomeState, selectedChoice: WelcomeChoice) => {
+  if (state === 'focused') {
+    return 'Focus begun'
+  }
+  if (state === 'starting') {
+    return `I'm Anchor.\nStarting focus...`.trim()
+  }
+  if (state === 'declined') {
+    return `I'm Anchor.\nNo problem.\n\nCome back when ready.`.trim()
+  }
+  const yesLabel = selectedChoice === 'yes' ? '> Yes' : '  Yes'
+  const noLabel = selectedChoice === 'no' ? '> No' : '  No'
+  return `Ready to focus?\n\n${yesLabel}\n${noLabel}`.trim()
+}
+
+const formatGlassContent = (message: FocusMessage | null, imu: ImuState | null, sessionActive: boolean) => {
+  if (!sessionActive) {
+    const imuLine = imu
+      ? `${imu.mode} e:${imu.energy.toFixed(2)} f:${imu.movingFrac.toFixed(2)}`
+      : 'IMU waiting for samples...'
+    const axisLine = imu
+      ? `x:${imu.x.toFixed(1)} y:${imu.y.toFixed(1)} z:${imu.z.toFixed(1)}`
+      : ''
+    return `Anchor — IMU\nNo active session\n${imuLine}\n${axisLine}`.trim()
+  }
   const prefix = message?.userOnTrack ? 'On track' : 'Check focus'
   const focusLine = message?.message ? message.message.slice(0, 52) : 'Waiting for focus check...'
   const imuLine = imu
@@ -75,6 +204,23 @@ const formatGlassContent = (message: FocusMessage | null, imu: ImuState | null) 
   return `Anchor — ${prefix}\n${focusLine}\n${imuLine}\n${axisLine}`.trim()
 }
 
+const renderWelcome = (state: WelcomeState, selectedChoice: WelcomeChoice) => {
+  welcomeCard.className = `welcome-card ${state}`
+  if (state === 'focused') {
+    welcomeMessageNode.textContent = 'Glasses prompt: Focus begun.'
+    gestureStatusNode.textContent = 'Confirmed Yes.'
+  } else if (state === 'starting') {
+    welcomeMessageNode.textContent = 'Glasses prompt: starting focus...'
+    gestureStatusNode.textContent = 'Creating your focus session...'
+  } else if (state === 'declined') {
+    welcomeMessageNode.textContent = 'Glasses prompt: no problem.'
+    gestureStatusNode.textContent = 'Confirmed No. Anchor will stay idle.'
+  } else {
+    welcomeMessageNode.textContent = `Glasses prompt: ${selectedChoice === 'yes' ? 'Yes' : 'No'} selected.`
+    gestureStatusNode.textContent = 'Swipe up for Yes, swipe down for No, press to confirm.'
+  }
+}
+
 const renderFocusMessage = (message: FocusMessage | null) => {
   focusCard.classList.toggle('off-track', message?.userOnTrack === false)
   focusCard.classList.toggle('on-track', message?.userOnTrack === true)
@@ -82,6 +228,30 @@ const renderFocusMessage = (message: FocusMessage | null) => {
   focusMetaNode.textContent = message?.createdAt
     ? `${message.status || 'ok'} · ${new Date(message.createdAt).toLocaleTimeString()}`
     : 'No message yet.'
+}
+
+const renderNoActiveSession = () => {
+  focusCard.classList.remove('off-track', 'on-track')
+  focusMessageNode.textContent = 'Start a focus session to show Anchor messages.'
+  focusMetaNode.textContent = 'Message polling paused.'
+}
+
+const messageHistory: FocusMessage[] = []
+let lastRenderedMessageKey = ''
+
+const trackMessageChange = (message: FocusMessage | null) => {
+  if (!message?.message) return
+  const key = `${message.createdAt || ''}:${message.message}`
+  if (key === lastRenderedMessageKey) return
+  lastRenderedMessageKey = key
+  messageHistory.unshift(message)
+  while (messageHistory.length > 4) messageHistory.pop()
+  focusHistoryNode.innerHTML = messageHistory
+    .map((item) => {
+      const time = item.createdAt ? new Date(item.createdAt).toLocaleTimeString() : ''
+      return `<div class="focus-history-item">${time} ${item.message}</div>`
+    })
+    .join('')
 }
 
 const fetchLatestFocusMessage = async () => {
@@ -93,6 +263,24 @@ const fetchLatestFocusMessage = async () => {
   return message.message ? message : null
 }
 
+const fetchCurrentSession = async () => {
+  const response = await fetch(`${ANCHOR_API_ORIGIN}/session/current`)
+  if (!response.ok) return null
+  const session = (await response.json()) as FocusSession
+  return session?.intent ? session : null
+}
+
+const startFocusSession = async () => {
+  const response = await fetch(`${ANCHOR_API_ORIGIN}/session/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ intent: 'work/study', mode: 'deep' }),
+  })
+  if (!response.ok) {
+    throw new Error(`Unable to start focus session: ${response.status}`)
+  }
+}
+
 async function bootstrap() {
   try {
     const bridge = await waitForEvenAppBridge()
@@ -100,7 +288,15 @@ async function bootstrap() {
     setStatus('Bridge connected. Rendering to the glasses...')
     let latestFocusMessage: FocusMessage | null = null
     let latestImuState: ImuState | null = null
+    let activeSessionId: number | null = null
+    let messagePollInterval: number | null = null
+    let inactiveRendered = false
+    let welcomeState: WelcomeState = 'choosing'
+    let selectedWelcomeChoice: WelcomeChoice = 'yes'
+    let welcomeResolved = false
+    let focusMessagesVisibleAfter = Number.POSITIVE_INFINITY
 
+    const initialWelcomeContent = formatWelcomeGlassContent(welcomeState, selectedWelcomeChoice)
     const helloWorld = new TextContainerProperty({
       xPosition: 0,
       yPosition: 0,
@@ -111,7 +307,7 @@ async function bootstrap() {
       paddingLength: 12,
       containerID: 1,
       containerName: 'hello',
-      content: formatGlassContent(null, null),
+      content: initialWelcomeContent,
       isEventCapture: 1,
     })
 
@@ -132,20 +328,42 @@ async function bootstrap() {
     const minGlassWriteIntervalMs = 200
     let lastGlassWriteAt = 0
     let glassWriteInFlight = false
+    let lastGlassContent = initialWelcomeContent
+    let queuedGlassContent: string | null = null
 
     const writeGlasses = async (content: string) => {
+      if (content === lastGlassContent && queuedGlassContent === null) {
+        logGlassDebug('skipping duplicate glasses content', { content })
+        return
+      }
       if (glassWriteInFlight) {
+        queuedGlassContent = content
+        logGlassDebug('queued glasses content while write is in flight', { content })
         return
       }
       glassWriteInFlight = true
       try {
-        await bridge.textContainerUpgrade(
-          new TextContainerUpgrade({
-            containerID: 1,
-            containerName: 'hello',
-            content,
-          }),
-        )
+        let nextContent: string | null = content
+        while (nextContent !== null) {
+          const contentToWrite = nextContent
+          queuedGlassContent = null
+          logGlassDebug('writing glasses content', { content: contentToWrite })
+          await bridge.textContainerUpgrade(
+            new TextContainerUpgrade({
+              containerID: 1,
+              containerName: 'hello',
+              content: contentToWrite,
+            }),
+          )
+          lastGlassWriteAt = performance.now()
+          lastGlassContent = contentToWrite
+          logGlassDebug('glasses content write complete', { content: contentToWrite })
+          nextContent = queuedGlassContent
+          if (nextContent === lastGlassContent) {
+            queuedGlassContent = null
+            nextContent = null
+          }
+        }
       } catch (err) {
         console.warn('textContainerUpgrade failed', err)
       } finally {
@@ -153,11 +371,34 @@ async function bootstrap() {
       }
     }
 
+    const updateWelcomeState = async (state: WelcomeState) => {
+      logGlassDebug('welcome state transition', { from: welcomeState, to: state, selectedWelcomeChoice })
+      welcomeState = state
+      renderWelcome(state, selectedWelcomeChoice)
+      await writeGlasses(formatWelcomeGlassContent(welcomeState, selectedWelcomeChoice))
+    }
+
+    const updateWelcomeSelection = async (choice: WelcomeChoice) => {
+      if (welcomeResolved) {
+        logGlassDebug('ignored selection because welcome is resolved', { choice, welcomeState })
+        return
+      }
+      if (selectedWelcomeChoice === choice) {
+        logGlassDebug('ignored duplicate welcome selection', { choice, welcomeState })
+        return
+      }
+      logGlassDebug('welcome selection changed', { from: selectedWelcomeChoice, to: choice })
+      selectedWelcomeChoice = choice
+      renderWelcome(welcomeState, selectedWelcomeChoice)
+      await writeGlasses(formatWelcomeGlassContent(welcomeState, selectedWelcomeChoice))
+    }
+
     const refreshFocusMessage = async () => {
       try {
         latestFocusMessage = await fetchLatestFocusMessage()
         renderFocusMessage(latestFocusMessage)
-        await writeGlasses(formatGlassContent(latestFocusMessage, latestImuState))
+        trackMessageChange(latestFocusMessage)
+        await writeGlasses(formatGlassContent(latestFocusMessage, latestImuState, true))
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to fetch Anchor message.'
         latestFocusMessage = { userOnTrack: false, message, status: 'fetch_error' }
@@ -165,10 +406,107 @@ async function bootstrap() {
       }
     }
 
-    await refreshFocusMessage()
+    const stopMessagePolling = async () => {
+      if (messagePollInterval !== null) {
+        window.clearInterval(messagePollInterval)
+        messagePollInterval = null
+      }
+      if (inactiveRendered && activeSessionId === null && latestFocusMessage === null) return
+      activeSessionId = null
+      latestFocusMessage = null
+      inactiveRendered = true
+      renderNoActiveSession()
+      await writeGlasses(formatGlassContent(null, latestImuState, false))
+    }
+
+    const startMessagePolling = async (session: FocusSession) => {
+      if (session.id === activeSessionId && messagePollInterval !== null) return
+      activeSessionId = session.id || null
+      inactiveRendered = false
+      await refreshFocusMessage()
+      messagePollInterval = window.setInterval(() => {
+        void refreshFocusMessage()
+      }, 10_000)
+    }
+
+    const handleWelcomeChoice = async (choice: WelcomeChoice) => {
+      if (welcomeResolved) {
+        logGlassDebug('ignored choice because welcome is resolved', { choice, welcomeState })
+        return
+      }
+      logGlassDebug('welcome choice confirmed', { choice })
+      welcomeResolved = true
+      if (choice === 'no') {
+        await updateWelcomeState('declined')
+        return
+      }
+      focusMessagesVisibleAfter = performance.now() + 5_000
+      await updateWelcomeState('starting')
+      try {
+        await startFocusSession()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to start focus session.'
+        setStatus(message)
+        logGlassDebug('focus session start failed', { message })
+        return
+      }
+      logGlassDebug('focus session start succeeded')
+      await updateWelcomeState('focused')
+      window.setTimeout(() => {
+        void syncSessionState()
+      }, 5_000)
+    }
+
+    const syncSessionState = async () => {
+      try {
+        const session = await fetchCurrentSession()
+        if (!session) {
+          await stopMessagePolling()
+          return
+        }
+        await startMessagePolling(session)
+      } catch {
+        await stopMessagePolling()
+      }
+    }
+
+    const handleWelcomeGesture = async (eventType: number | undefined) => {
+      if (welcomeResolved) {
+        logGlassDebug('ignored gesture because welcome is resolved', { eventType, welcomeState })
+        return
+      }
+      const normalizedEventType = eventType === undefined ? CLICK_EVENT : eventType
+      logGlassDebug('handling welcome gesture', {
+        eventType,
+        normalizedEventType,
+        selectedWelcomeChoice,
+        welcomeState,
+      })
+      if (normalizedEventType === SCROLL_TOP_EVENT) {
+        await updateWelcomeSelection('yes')
+        return
+      }
+      if (normalizedEventType === SCROLL_BOTTOM_EVENT) {
+        await updateWelcomeSelection('no')
+        return
+      }
+      if (normalizedEventType === CLICK_EVENT) {
+        selectedWelcomeChoice = 'yes'
+        await handleWelcomeChoice('yes')
+        return
+      }
+      if (normalizedEventType === DOUBLE_CLICK_EVENT) {
+        selectedWelcomeChoice = 'no'
+        await handleWelcomeChoice('no')
+      }
+    }
+
+    renderWelcome(welcomeState, selectedWelcomeChoice)
     window.setInterval(() => {
-      void refreshFocusMessage()
-    }, 10_000)
+      if (welcomeResolved && welcomeState === 'focused' && performance.now() >= focusMessagesVisibleAfter) {
+        void syncSessionState()
+      }
+    }, 5_000)
 
     // Distraction heuristic — first-pass values, calibrate from console.log('imu', ...)
     // STILL_THRESHOLD: per-sample energy above which we count a sample as "moving"
@@ -181,8 +519,59 @@ async function bootstrap() {
     const samples: { t: number; energy: number }[] = []
 
     bridge.onEvenHubEvent((event) => {
+      if (event.textEvent || event.listEvent) {
+        console.log('even input event', event)
+        const eventType = event.textEvent?.eventType ?? event.listEvent?.eventType
+        const containerName = event.textEvent?.containerName ?? event.listEvent?.containerName ?? 'unknown'
+        const source = event.sysEvent?.eventSource ? String(event.sysEvent.eventSource) : 'touchpad'
+        logGlassDebug('received captured input event', {
+          eventType,
+          formattedEventType: formatEventType(eventType),
+          containerName,
+          source,
+          welcomeResolved,
+          welcomeState,
+        })
+        renderTouchEvent(eventType, containerName, source)
+        setStatus(`Input event: ${formatEventType(eventType)} from ${containerName}`)
+        void handleWelcomeGesture(eventType)
+      }
+
       const sys = event.sysEvent
       if (!sys || sys.eventType !== OsEventTypeList.IMU_DATA_REPORT || !sys.imuData) {
+        if (event.textEvent || event.listEvent) {
+          return
+        }
+        if (sys?.eventType !== undefined) {
+          const source = sys.eventSource ? String(sys.eventSource) : 'system'
+          logGlassDebug('received system event', {
+            eventType: sys.eventType,
+            formattedEventType: formatEventType(sys.eventType),
+            source,
+            welcomeResolved,
+            welcomeState,
+          })
+          renderTouchEvent(sys.eventType, 'system', source)
+          setStatus(`System event: ${formatEventType(sys.eventType)} source:${source}`)
+          if (isTouchEventType(sys.eventType)) {
+            void handleWelcomeGesture(sys.eventType)
+          }
+          return
+        }
+        if (event.jsonData) {
+          logGlassDebug('received raw jsonData event', {
+            eventType: sys?.eventType,
+            formattedEventType: formatEventType(sys?.eventType),
+            welcomeResolved,
+            welcomeState,
+          })
+          renderTouchEvent(undefined, 'jsonData', 'raw')
+          setStatus('Raw jsonData event received. See console.')
+          void handleWelcomeGesture(sys?.eventType)
+          return
+        }
+        console.log('even event', event)
+        setStatus('Even non-IMU event received. See console.')
         return
       }
 
@@ -215,23 +604,22 @@ async function bootstrap() {
         }
       }
 
-      console.log('imu', { x, y, z, energy, mode, movingFrac, n: samples.length })
       latestImuState = { mode, energy, movingFrac, x, y, z }
-      setStatus(
-        `${mode}  energy:${energy.toFixed(2)}  frac:${movingFrac.toFixed(2)}  ` +
-          `x:${x.toFixed(2)} y:${y.toFixed(2)} z:${z.toFixed(2)}`,
-      )
 
       if (glassWriteInFlight || now - lastGlassWriteAt < minGlassWriteIntervalMs) {
         return
       }
       lastGlassWriteAt = now
 
-      void writeGlasses(formatGlassContent(latestFocusMessage, latestImuState))
+      const content =
+        messagePollInterval !== null
+          ? formatGlassContent(latestFocusMessage, latestImuState, true)
+          : formatWelcomeGlassContent(welcomeState, selectedWelcomeChoice)
+      void writeGlasses(content)
     })
 
     await bridge.imuControl(true, ImuReportPace.P100)
-    setStatus('IMU streaming. Move your head!')
+    setStatus('G2 touch ready. IMU is still streaming in the background.')
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     setStatus(`Failed to initialize the Even bridge: ${message}`)

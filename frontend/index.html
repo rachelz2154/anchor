@@ -377,6 +377,7 @@
   let checkpointTimerInterval = null;
   let reasoningCount = 0;
   let recentEventEls = [];   // last 10 event DOM elements for signal highlighting
+  let sessionActive = false;
 
   // ── WebSocket ────────────────────────────────────────────────────────────
 
@@ -428,10 +429,9 @@
       case 'agent_error':
         hideAgentStatus();
         console.error('Agent error:', msg.message);
-        renderFocusMessage({ userOnTrack: false, message: msg.message });
         break;
       case 'focus_message':
-        renderFocusMessage(msg.message);
+        if (sessionActive) renderFocusMessage(msg.message);
         break;
     }
   }
@@ -439,6 +439,7 @@
   // ── Session ──────────────────────────────────────────────────────────────
 
   function onSessionStarted(msg) {
+    sessionActive = true;
     document.getElementById('session-intent').textContent = msg.intent;
     document.getElementById('session-intent').style.color = 'var(--text)';
     sessionStartTime = Date.now();
@@ -449,12 +450,13 @@
   }
 
   function onSessionEnded() {
+    sessionActive = false;
     document.getElementById('session-intent').textContent = 'No active session';
     document.getElementById('session-intent').style.color = 'var(--text-dim)';
     document.getElementById('session-meta').textContent = '';
     clearInterval(sessionTimerInterval);
     sessionStartTime = null;
-    renderFocusMessage({ message: 'No active session.', userOnTrack: false });
+    renderFocusMessage(null);
   }
 
   function updateTimer() {
@@ -531,7 +533,7 @@
   }
 
   function formatEventDesc(type, payload) {
-    if (type === 'tab_change') return `${payload.domain || 'unknown'} — ${Math.round(payload.durationSec || payload.duration_sec || 0)}s`;
+    if (type === 'tab_change' || type === 'tab_active') return `${payload.domain || 'unknown'} — ${Math.round(payload.durationSec || payload.duration_sec || 0)}s`;
     if (type === 'accel_snapshot') return payload.summary || 'motion data';
     if (type === 'idle') return `Idle ${Math.round(payload.duration_sec || 0)}s`;
     if (type === 'app_switch') return `${payload.from || '?'} → ${payload.to || '?'}`;
@@ -711,15 +713,8 @@
 
   // Restore active session on page load
   fetch('/session/current').then(r => r.json()).then(s => {
-    if (s && s.intent) {
-      onSessionStarted(s);
-      sessionStartTime = new Date(s.started_at + 'Z').getTime();
-    }
+    renderFocusMessage(null);
   });
-  fetch('/messages/latest')
-    .then(r => r.ok ? r.json() : {})
-    .then(renderFocusMessage)
-    .catch(() => renderFocusMessage(null));
 </script>
 </body>
 </html>
