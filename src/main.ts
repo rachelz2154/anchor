@@ -32,11 +32,11 @@ type ImuState = {
   mode: 'Focus' | 'Distracted'
   energy: number
   movingFrac: number
+  possibleHeadDown: boolean
+  headDownSeconds: number
   x: number
   y: number
   z: number
-  possibleHeadDown: boolean
-  headDownSeconds: number
 }
 
 type WelcomeChoice = 'yes' | 'no'
@@ -772,16 +772,29 @@ async function bootstrap() {
       }
     }, 5_000)
 
-    // Distraction heuristic — first-pass values, calibrate from console.log('imu', ...)
-    // STILL_THRESHOLD: per-sample energy above which we count a sample as "moving"
-    // MOVING_FRAC_TRIGGER: fraction of the rolling window that must be moving to flip to Distracted
-    const STILL_THRESHOLD = 0.5
+    // Distraction heuristic — calibrated against real glasses (see imu_ref.md)
+    const STILL_THRESHOLD = 0.02
     const WINDOW_MS = 60_000
     const MOVING_FRAC_TRIGGER = 0.7
     const MIN_SAMPLES = 30
+    // Post a motion snapshot every 30s, or immediately on mode flip
+    const IMU_POST_INTERVAL_MS = 30_000
+
     let prev: { x: number; y: number; z: number } | null = null
     const samples: { t: number; energy: number }[] = []
     let headDownStartedAt: number | null = null
+    let lastImuPostAt = 0
+    let lastPostedMode: 'Focus' | 'Distracted' | null = null
+
+    function postMotionEvent(payload: ImuState & { summary: string }) {
+      if (imuSignalPostInFlight) return
+      imuSignalPostInFlight = true
+      fetch(`${ANCHOR_API_ORIGIN}/events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'g2', type: 'motion', payload }),
+      }).finally(() => { imuSignalPostInFlight = false })
+    }
 
     bridge.onEvenHubEvent((event) => {
       if (event.textEvent || event.listEvent) {
@@ -878,33 +891,20 @@ async function bootstrap() {
       }
 
       latestImuState = { mode, energy, movingFrac, x, y, z, possibleHeadDown, headDownSeconds }
-      if (
-        welcomeResolved &&
-        welcomeState === 'focused' &&
-        now - lastImuSignalPostedAt >= IMU_SIGNAL_INTERVAL_MS &&
-        !imuSignalPostInFlight
-      ) {
-        lastImuSignalPostedAt = now
-        imuSignalPostInFlight = true
-        void postImuSignal(latestImuState)
-          .then(() => {
-            logGlassDebug('posted IMU signal', {
-              mode: latestImuState?.mode,
-              energy: latestImuState?.energy,
-              movingFrac: latestImuState?.movingFrac,
-            })
-          })
-          .catch((error: unknown) => {
-            const message = error instanceof Error ? error.message : 'Unable to post IMU signal.'
-            logGlassDebug('IMU signal post failed', { message })
-          })
-          .finally(() => {
-            imuSignalPostInFlight = false
-          })
-      }
 
-      // IMU updates are retained for local/debug state only. They should not
-      // refresh the glasses display during a quiet focus session.
+      // Post to backend: every 30s OR immediately on mode flip
+      const modeFlipped = lastPostedMode !== null && mode !== lastPostedMode
+      const intervalElapsed = now - lastImuPostAt >= IMU_POST_INTERVAL_MS
+      if ((intervalElapsed || modeFlipped) && !imuSignalPostInFlight) {
+        lastImuPostAt = now
+        lastPostedMode = mode
+        const movingPct = Math.round(movingFrac * 100)
+        const headNote = possibleHeadDown ? `, head-down ${headDownSeconds.toFixed(0)}s` : ''
+        const summary = mode === 'Focus'
+          ? `Head still (Focus, ${movingPct}% moving${headNote})`
+          : `Sustained movement (Distracted, ${movingPct}% moving${headNote})`
+        postMotionEvent({ mode, energy, movingFrac, possibleHeadDown, headDownSeconds, x, y, z, summary })
+      }
     })
 
     await bridge.imuControl(true, ImuReportPace.P100)

@@ -28,6 +28,8 @@ def _summarise_events(events: list[dict]) -> str:
     if not events:
         return "No recent activity recorded."
     lines = []
+    motion_payloads = []
+
     for e in events:
         payload = json.loads(e["payload"]) if isinstance(e["payload"], str) else e["payload"]
         if e["type"] in {"tab_change", "tab_active"}:
@@ -46,12 +48,33 @@ def _summarise_events(events: list[dict]) -> str:
                 detail += f' | {summary[:160]}'
 
             lines.append(f"  Browser: {detail} ({duration}s)")
+        elif e["type"] == "motion":
+            motion_payloads.append(payload)
         elif e["type"] == "accel_snapshot":
+            # legacy simulator events
             lines.append(f"  Motion/posture: {payload.get('summary', 'no data')}")
         elif e["type"] == "idle":
             lines.append(f"  Input idle: {payload.get('duration_sec', 0):.0f}s")
         elif e["type"] == "app_switch":
             lines.append(f"  App switch: {payload.get('from', '?')} → {payload.get('to', '?')}")
+
+    if motion_payloads:
+        latest = motion_payloads[0]  # events ordered DESC — most recent first
+        mode = latest.get("mode", "Focus")
+        moving_pct = int(latest.get("movingFrac", 0) * 100)
+        distracted_count = sum(1 for m in motion_payloads if m.get("mode") == "Distracted")
+        max_head_down = max((m.get("headDownSeconds", 0) for m in motion_payloads), default=0)
+        spike_count = sum(1 for m in motion_payloads if m.get("energy", 0) > 0.1)
+
+        parts = [f"mode={mode}, {moving_pct}% moving in last minute"]
+        if distracted_count >= 2:
+            parts.append(f"{distracted_count} Distracted readings in window")
+        if max_head_down > 10:
+            parts.append(f"head-down posture up to {max_head_down:.0f}s")
+        if spike_count:
+            parts.append(f"{spike_count} sudden head movement(s)")
+        lines.append(f"  Glasses motion: {', '.join(parts)}")
+
     return "\n".join(lines)
 
 
