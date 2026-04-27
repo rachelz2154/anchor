@@ -111,7 +111,7 @@ Declared intent: "{session['intent']}"
 Focus mode: {mode.upper()}
 {MODE_INSTRUCTIONS[mode]}
 
-Recent activity (last 5 min):
+Recent activity (last 2 min):
 {activity}
 
 Memory context (past behaviour on this domain):
