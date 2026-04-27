@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-from .agent import broadcast, get_active_session, set_queue
+from .agent import agent_loop, broadcast, get_active_session, set_queue
 from .database import get_conn, init_db
 from .firestore_agent import latest_message, run_focus_check_once, firestore_focus_loop
 from .firestore_store import (
@@ -46,7 +46,8 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 async def lifespan(app: FastAPI):
     init_db()
     set_queue(_broadcast_queue)
-    asyncio.create_task(firestore_focus_loop(broadcast))
+    asyncio.create_task(agent_loop())           # SQLite-based drift detection (always runs)
+    asyncio.create_task(firestore_focus_loop(broadcast))  # Firestore sync (no-op if unconfigured)
     asyncio.create_task(_broadcaster())
     yield
 
