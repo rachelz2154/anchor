@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timezone
 
 from anthropic import Anthropic
 
@@ -52,6 +53,26 @@ def _summarise_events(events: list[dict]) -> str:
         elif e["type"] == "app_switch":
             lines.append(f"  App switch: {payload.get('from', '?')} → {payload.get('to', '?')}")
     return "\n".join(lines)
+
+
+def _parse_time(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc)
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _format_signal_time(signal: dict) -> str:
+    observed_at = signal.get("observedAt") or signal.get("eventEndedAt") or signal.get("createdAt")
+    parsed = _parse_time(observed_at)
+    if not parsed:
+        return str(observed_at or "time unknown")
+    age_seconds = max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+    return f"{parsed.isoformat()} ({age_seconds}s ago)"
 
 
 def check_drift(session: dict, recent_events: list[dict], memory_hint: str) -> dict:
@@ -115,16 +136,21 @@ def check_user_on_track(session: dict, signals: list[dict]) -> dict:
     mode = session.get("mode", "deep")
     signal_lines = []
     for signal in signals[:30]:
-        created_at = signal.get("createdAt", "")
+        signal_time = _format_signal_time(signal)
         signal_type = signal.get("type", "tab_change")
         if signal_type == "accel_snapshot":
             summary = signal.get("summary", "motion data")
-            signal_lines.append(f"- {created_at}: glasses motion {summary}".strip())
+            signal_lines.append(f"- observed {signal_time}: glasses motion {summary}".strip())
         else:
             domain = signal.get("domain", "unknown")
             duration = signal.get("durationSec", signal.get("duration_sec", 0))
             title = signal.get("title", "")
-            signal_lines.append(f"- {created_at}: {signal_type} {domain} for {duration}s {title}".strip())
+            event_started_at = signal.get("eventStartedAt", "unknown start")
+            event_ended_at = signal.get("eventEndedAt", "unknown end")
+            signal_lines.append(
+                f"- observed {signal_time}: {signal_type} {domain} for {duration}s "
+                f"(event {event_started_at} to {event_ended_at}) {title}".strip()
+            )
 
     activity = "\n".join(signal_lines) or "No browser signals were recorded in the latest window."
     response = client.messages.create(
@@ -167,6 +193,8 @@ Tone rules:
 - If glasses motion reports possible head-down/phone posture for 10+ seconds, gently ask:
   "Hey, are you looking at your phone or something?"
 - Keep the message short enough for a tiny glasses display.
+- Treat timestamps and ages as authoritative. Do not describe an old browser event as happening now.
+- If the latest browser event is no longer off-task, do not repeat an older off-task judgment.
 
 The user's current focus intent is: "{intent}"
 Focus mode: {mode}

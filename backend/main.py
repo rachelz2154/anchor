@@ -239,10 +239,13 @@ async def ingest_event(body: EventPayload):
     if not session:
         return {"ok": False, "reason": "no active session"}
     payload = dict(body.payload)
+    received_at = datetime.now().isoformat()
+    payload.setdefault("observedAt", received_at)
     firestore_signal = {
         "source": body.source,
         "type": body.type,
         **payload,
+        "receivedAt": received_at,
         "sessionId": session["id"],
         "sessionIntent": session["intent"],
         "sessionMode": session["mode"],
@@ -254,7 +257,7 @@ async def ingest_event(body: EventPayload):
     conn = get_conn()
     conn.execute(
         "INSERT INTO activity_events (session_id, timestamp, source, type, payload) VALUES (?,?,?,?,?)",
-        (session["id"], datetime.now().isoformat(), body.source, body.type, json.dumps(payload)),
+        (session["id"], received_at, body.source, body.type, json.dumps(payload)),
     )
     conn.commit()
     conn.close()
