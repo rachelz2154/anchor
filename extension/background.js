@@ -2,7 +2,7 @@ const ANCHOR_ORIGIN = 'http://localhost:8000';
 const AGENT_URL = `${ANCHOR_ORIGIN}/events`;
 
 // Domains/patterns to ignore entirely — not meaningful activity
-const SKIP_DOMAINS = new Set(['newtab', 'extensions', 'settings', '']);
+const SKIP_DOMAINS = new Set(['newtab', 'extensions', 'settings', '', 'localhost', '127.0.0.1']);
 const SKIP_PROTOCOLS = ['chrome:', 'chrome-extension:', 'about:', 'edge:', 'moz-extension:'];
 
 let activeTab = { domain: null, title: null, path: null, summary: null, startedAt: null };

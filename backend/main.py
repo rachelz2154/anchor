@@ -25,15 +25,23 @@ load_dotenv()
 
 from .agent import agent_loop, broadcast, get_active_session, set_queue
 from .database import get_conn, init_db
-from .firestore_agent import latest_message, run_focus_check_once, firestore_focus_loop
-from .firestore_store import (
-    FirestoreConfigError,
-    FirestoreRequestError,
-    create_live_signal,
-    create_tab_snapshot,
-    firestore_status,
-    set_current_session,
-)
+# from .firestore_agent import latest_message, run_focus_check_once, firestore_focus_loop
+# from .firestore_store import (
+#     FirestoreConfigError,
+#     FirestoreRequestError,
+#     create_live_signal,
+#     create_tab_snapshot,
+#     firestore_status,
+#     set_current_session,
+# )
+FirestoreConfigError = FirestoreRequestError = Exception
+def create_live_signal(_): return None, {}
+def create_tab_snapshot(_): return None, {}
+def firestore_status(): return {}
+def set_current_session(_): pass
+async def firestore_focus_loop(_): pass
+def latest_message(): return None
+async def run_focus_check_once(): return None
 from .memory import get_all_memory, get_metrics, record_response
 
 _broadcast_queue: asyncio.Queue = asyncio.Queue()
