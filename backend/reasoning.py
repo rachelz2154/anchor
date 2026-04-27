@@ -59,6 +59,9 @@ def check_drift(session: dict, recent_events: list[dict], memory_hint: str) -> d
     activity = _summarise_events(recent_events)
 
     prompt = f"""You are Anchor, an ambient focus agent. Detect whether the user has drifted from their declared intent.
+Use a friendly, therapeutic tone. Be warm, non-shaming, and autonomy-preserving.
+Avoid scolding, commands, or phrases like "stay off", "should", "must", or "get back".
+Frame drift as neutral noticing and invite an intentional choice.
 
 Declared intent: "{session['intent']}"
 Focus mode: {mode.upper()}
@@ -83,7 +86,7 @@ Reply ONLY with valid JSON — no prose, no markdown:
   "confidence": 0.0–1.0,
   "reasoning": "one concise sentence",
   "send_checkpoint": true | false,
-  "checkpoint_message": "short message for glasses (max 10 words)",
+  "checkpoint_message": "warm checkpoint for glasses (max 10 words)",
   "signal_relevance": [{{"domain": "example.com", "relevance": "context_related|ambiguous|off_task"}}]
 }}
 
@@ -112,12 +115,16 @@ def check_user_on_track(session: dict, signals: list[dict]) -> dict:
     mode = session.get("mode", "deep")
     signal_lines = []
     for signal in signals[:30]:
-        domain = signal.get("domain", "unknown")
-        duration = signal.get("durationSec", signal.get("duration_sec", 0))
-        title = signal.get("title", "")
         created_at = signal.get("createdAt", "")
         signal_type = signal.get("type", "tab_change")
-        signal_lines.append(f"- {created_at}: {signal_type} {domain} for {duration}s {title}".strip())
+        if signal_type == "accel_snapshot":
+            summary = signal.get("summary", "motion data")
+            signal_lines.append(f"- {created_at}: glasses motion {summary}".strip())
+        else:
+            domain = signal.get("domain", "unknown")
+            duration = signal.get("durationSec", signal.get("duration_sec", 0))
+            title = signal.get("title", "")
+            signal_lines.append(f"- {created_at}: {signal_type} {domain} for {duration}s {title}".strip())
 
     activity = "\n".join(signal_lines) or "No browser signals were recorded in the latest window."
     response = client.messages.create(
@@ -148,15 +155,28 @@ def check_user_on_track(session: dict, signals: list[dict]) -> dict:
         messages=[
             {
                 "role": "user",
-                "content": f"""The user's current focus intent is: "{intent}"
+                "content": f"""You are Anchor, a gentle focus companion.
+Your job is to notice drift without judgment and help the user make a conscious choice.
+
+Tone rules:
+- Be friendly, calm, and therapeutic.
+- Do not shame, scold, or command the user.
+- Avoid phrases like "stay off", "stop", "should", "must", or "return to".
+- Prefer soft language like "Looks like...", "Maybe...", "Want to...", "No judgment...", "Take a breath...".
+- If the user is off track, make the message supportive and choice-oriented.
+- If glasses motion reports possible head-down/phone posture for 10+ seconds, gently ask:
+  "Hey, are you looking at your phone or something?"
+- Keep the message short enough for a tiny glasses display.
+
+The user's current focus intent is: "{intent}"
 Focus mode: {mode}
 
 Recent browser signals:
 {activity}
 
-Decide whether the user is doing what they should be doing. Use the tool with exactly:
+Decide whether the recent activity appears aligned with the user's stated focus. Use the tool with exactly:
 userOnTrack: boolean
-message: short direct message for the dashboard""",
+message: one short, kind sentence for Anchor. If off track, avoid commands and invite an intentional choice.""",
             }
         ],
     )
