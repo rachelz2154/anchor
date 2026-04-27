@@ -71,7 +71,8 @@ async function restoreState() {
 
 async function flushActiveTab() {
   if (shouldSkip(activeTab.domain) || !activeTab.startedAt) return;
-  const duration_sec = Math.round((Date.now() - activeTab.startedAt) / 1000);
+  const endedAt = Date.now();
+  const duration_sec = Math.round((endedAt - activeTab.startedAt) / 1000);
   if (duration_sec < 2) return;
   await postEvent('tab_change', {
     domain: activeTab.domain,
@@ -79,6 +80,9 @@ async function flushActiveTab() {
     path: activeTab.path || '',
     summary: activeTab.summary || '',
     duration_sec,
+    eventStartedAt: new Date(activeTab.startedAt).toISOString(),
+    eventEndedAt: new Date(endedAt).toISOString(),
+    observedAt: new Date(endedAt).toISOString(),
   });
 }
 
@@ -170,12 +174,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   await restoreState();
   if (shouldSkip(activeTab.domain) || !activeTab.startedAt) return;
   const duration_sec = Math.round((Date.now() - activeTab.startedAt) / 1000);
+  const observedAt = Date.now();
   await postEvent('tab_change', {
     domain: activeTab.domain,
     title: activeTab.title || '',
     path: activeTab.path || '',
     duration_sec,
     heartbeat: true,
+    eventStartedAt: new Date(activeTab.startedAt).toISOString(),
+    eventEndedAt: new Date(observedAt).toISOString(),
+    observedAt: new Date(observedAt).toISOString(),
   });
   await captureOpenTabsSnapshot();
 });

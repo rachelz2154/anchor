@@ -127,6 +127,8 @@ async def firestore_focus_loop(broadcast):
             message = await run_focus_check_once()
             if message:
                 await broadcast({"type": "focus_message", "message": message})
+            else:
+                await broadcast({"type": "focus_message", "message": {}})
         except FirestoreConfigError as exc:
             await broadcast({"type": "agent_error", "message": str(exc)})
         except (FirestoreRequestError, ValueError, KeyError, Exception) as exc:
@@ -134,4 +136,12 @@ async def firestore_focus_loop(broadcast):
 
 
 def latest_message() -> dict[str, Any] | None:
-    return get_latest_message()
+    message = get_latest_message()
+    if not message:
+        return None
+    created_at = _parse_time(message.get("createdAt"))
+    if not created_at:
+        return None
+    if created_at < datetime.now(timezone.utc) - timedelta(seconds=CHECK_INTERVAL_SECONDS):
+        return None
+    return message
