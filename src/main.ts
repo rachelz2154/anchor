@@ -775,7 +775,7 @@ async function bootstrap() {
     // Distraction heuristic — first-pass values, calibrate from console.log('imu', ...)
     // STILL_THRESHOLD: per-sample energy above which we count a sample as "moving"
     // MOVING_FRAC_TRIGGER: fraction of the rolling window that must be moving to flip to Distracted
-    const STILL_THRESHOLD = 0.5
+    const STILL_THRESHOLD = 0.02
     const WINDOW_MS = 60_000
     const MOVING_FRAC_TRIGGER = 0.7
     const MIN_SAMPLES = 30
