@@ -45,7 +45,7 @@ def get_active_session() -> dict | None:
     return dict(row) if row else None
 
 
-def get_recent_events(session_id: int, seconds: int = 30) -> list[dict]:
+def get_recent_events(session_id: int, seconds: int = 15) -> list[dict]:
     since = (datetime.now() - timedelta(seconds=seconds)).isoformat()
     conn = get_conn()
     rows = conn.execute(
