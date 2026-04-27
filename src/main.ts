@@ -15,6 +15,7 @@ const ANCHOR_API_ORIGIN =
 
 type FocusMessage = {
   userOnTrack?: boolean
+  userFocused?: boolean
   message?: string
   status?: string
   createdAt?: string
@@ -39,6 +40,8 @@ type ImuState = {
 type WelcomeChoice = 'yes' | 'no'
 
 type WelcomeState = 'choosing' | 'starting' | 'focused' | 'declined'
+
+const GLASSES_IDLE_CONTENT = ''
 
 const CLICK_EVENT = 0
 const SCROLL_TOP_EVENT = 1
@@ -170,7 +173,7 @@ const logGlassDebug = (message: string, data?: Record<string, unknown>) => {
 
 const formatWelcomeGlassContent = (state: WelcomeState, selectedChoice: WelcomeChoice) => {
   if (state === 'focused') {
-    return 'Focus begun'
+    return 'Work session begun'
   }
   if (state === 'starting') {
     return `I'm Anchor.\nStarting focus...`.trim()
@@ -183,31 +186,20 @@ const formatWelcomeGlassContent = (state: WelcomeState, selectedChoice: WelcomeC
   return `Ready to focus?\n\n${yesLabel}\n${noLabel}`.trim()
 }
 
-const formatGlassContent = (message: FocusMessage | null, imu: ImuState | null, sessionActive: boolean) => {
-  if (!sessionActive) {
-    const imuLine = imu
-      ? `${imu.mode} e:${imu.energy.toFixed(2)} f:${imu.movingFrac.toFixed(2)}`
-      : 'IMU waiting for samples...'
-    const axisLine = imu
-      ? `x:${imu.x.toFixed(1)} y:${imu.y.toFixed(1)} z:${imu.z.toFixed(1)}`
-      : ''
-    return `Anchor — IMU\nNo active session\n${imuLine}\n${axisLine}`.trim()
+const isUserFocused = (message: FocusMessage | null) => message?.userFocused ?? message?.userOnTrack
+
+const formatFocusAlertGlassContent = (message: FocusMessage | null) => {
+  if (isUserFocused(message) !== false) {
+    return GLASSES_IDLE_CONTENT
   }
-  const prefix = message?.userOnTrack ? 'On track' : 'Check focus'
-  const focusLine = message?.message ? message.message.slice(0, 52) : 'Waiting for focus check...'
-  const imuLine = imu
-    ? `${imu.mode} e:${imu.energy.toFixed(2)} f:${imu.movingFrac.toFixed(2)}`
-    : 'IMU waiting for samples...'
-  const axisLine = imu
-    ? `x:${imu.x.toFixed(1)} y:${imu.y.toFixed(1)} z:${imu.z.toFixed(1)}`
-    : ''
-  return `Anchor — ${prefix}\n${focusLine}\n${imuLine}\n${axisLine}`.trim()
+  const focusLine = message.message ? message.message.slice(0, 72) : 'Anchor thinks you may be off track.'
+  return `On purpose?\n${focusLine}`.trim()
 }
 
 const renderWelcome = (state: WelcomeState, selectedChoice: WelcomeChoice) => {
   welcomeCard.className = `welcome-card ${state}`
   if (state === 'focused') {
-    welcomeMessageNode.textContent = 'Glasses prompt: Focus begun.'
+    welcomeMessageNode.textContent = 'Glasses prompt: Work session begun.'
     gestureStatusNode.textContent = 'Confirmed Yes.'
   } else if (state === 'starting') {
     welcomeMessageNode.textContent = 'Glasses prompt: starting focus...'
@@ -222,8 +214,9 @@ const renderWelcome = (state: WelcomeState, selectedChoice: WelcomeChoice) => {
 }
 
 const renderFocusMessage = (message: FocusMessage | null) => {
-  focusCard.classList.toggle('off-track', message?.userOnTrack === false)
-  focusCard.classList.toggle('on-track', message?.userOnTrack === true)
+  const userFocused = isUserFocused(message)
+  focusCard.classList.toggle('off-track', userFocused === false)
+  focusCard.classList.toggle('on-track', userFocused === true)
   focusMessageNode.textContent = message?.message || 'Waiting for Anchor...'
   focusMetaNode.textContent = message?.createdAt
     ? `${message.status || 'ok'} · ${new Date(message.createdAt).toLocaleTimeString()}`
@@ -323,10 +316,7 @@ async function bootstrap() {
       return
     }
 
-    // textContainerUpgrade is async and we don't want to flood BLE with writes.
-    // IMU at P100 = 10 Hz; cap the on-glass refresh at 5 Hz.
-    const minGlassWriteIntervalMs = 200
-    let lastGlassWriteAt = 0
+    // textContainerUpgrade is async, so keep only the latest pending display update.
     let glassWriteInFlight = false
     let lastGlassContent = initialWelcomeContent
     let queuedGlassContent: string | null = null
@@ -355,7 +345,6 @@ async function bootstrap() {
               content: contentToWrite,
             }),
           )
-          lastGlassWriteAt = performance.now()
           lastGlassContent = contentToWrite
           logGlassDebug('glasses content write complete', { content: contentToWrite })
           nextContent = queuedGlassContent
@@ -398,11 +387,12 @@ async function bootstrap() {
         latestFocusMessage = await fetchLatestFocusMessage()
         renderFocusMessage(latestFocusMessage)
         trackMessageChange(latestFocusMessage)
-        await writeGlasses(formatGlassContent(latestFocusMessage, latestImuState, true))
+        await writeGlasses(formatFocusAlertGlassContent(latestFocusMessage))
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to fetch Anchor message.'
         latestFocusMessage = { userOnTrack: false, message, status: 'fetch_error' }
         renderFocusMessage(latestFocusMessage)
+        await writeGlasses(formatFocusAlertGlassContent(latestFocusMessage))
       }
     }
 
@@ -416,7 +406,7 @@ async function bootstrap() {
       latestFocusMessage = null
       inactiveRendered = true
       renderNoActiveSession()
-      await writeGlasses(formatGlassContent(null, latestImuState, false))
+      await writeGlasses(GLASSES_IDLE_CONTENT)
     }
 
     const startMessagePolling = async (session: FocusSession) => {
@@ -453,6 +443,7 @@ async function bootstrap() {
       logGlassDebug('focus session start succeeded')
       await updateWelcomeState('focused')
       window.setTimeout(() => {
+        void writeGlasses(formatFocusAlertGlassContent(latestFocusMessage))
         void syncSessionState()
       }, 5_000)
     }
@@ -606,16 +597,8 @@ async function bootstrap() {
 
       latestImuState = { mode, energy, movingFrac, x, y, z }
 
-      if (glassWriteInFlight || now - lastGlassWriteAt < minGlassWriteIntervalMs) {
-        return
-      }
-      lastGlassWriteAt = now
-
-      const content =
-        messagePollInterval !== null
-          ? formatGlassContent(latestFocusMessage, latestImuState, true)
-          : formatWelcomeGlassContent(welcomeState, selectedWelcomeChoice)
-      void writeGlasses(content)
+      // IMU updates are retained for local/debug state only. They should not
+      // refresh the glasses display during a quiet focus session.
     })
 
     await bridge.imuControl(true, ImuReportPace.P100)
