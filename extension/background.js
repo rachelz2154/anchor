@@ -167,7 +167,21 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   await setActiveTab(tab);
 });
 
-// Heartbeat: report cumulative dwell every 60s + capture Firestore tab snapshot
+// Fast heartbeat: post active tab every 10s so dashboard feels live
+// (MV3 alarms can't go below 1 min; setInterval wakes the service worker more often)
+setInterval(async () => {
+  await restoreState();
+  if (shouldSkip(activeTab.domain) || !activeTab.startedAt) return;
+  const duration_sec = Math.round((Date.now() - activeTab.startedAt) / 1000);
+  await postEvent('tab_active', {
+    domain: activeTab.domain,
+    title: activeTab.title || '',
+    path: activeTab.path || '',
+    duration_sec,
+  });
+}, 10_000);
+
+// Slow heartbeat: cumulative dwell + Firestore tab snapshot every 60s
 chrome.alarms.create('heartbeat', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== 'heartbeat') return;

@@ -777,8 +777,8 @@ async function bootstrap() {
     const WINDOW_MS = 60_000
     const MOVING_FRAC_TRIGGER = 0.7
     const MIN_SAMPLES = 30
-    // Post a motion snapshot every 30s, or immediately on mode flip
-    const IMU_POST_INTERVAL_MS = 30_000
+    // Post a motion snapshot every 5s, or immediately on mode flip
+    const IMU_POST_INTERVAL_MS = 5_000
 
     let prev: { x: number; y: number; z: number } | null = null
     const samples: { t: number; energy: number }[] = []
