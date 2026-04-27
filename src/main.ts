@@ -41,7 +41,13 @@ type WelcomeChoice = 'yes' | 'no'
 
 type WelcomeState = 'choosing' | 'starting' | 'focused' | 'declined'
 
+type FocusPromptChoice = 'yes' | 'no'
+
+type FocusPromptState = 'idle' | 'asking' | 'answered'
+
 const GLASSES_IDLE_CONTENT = ''
+const FOCUS_PROMPT_YES_RESPONSE = "Ok, I'll check back in a few."
+const FOCUS_PROMPT_NO_RESPONSE = 'No worries. Take a breath. You can choose the next right step.'
 
 const CLICK_EVENT = 0
 const SCROLL_TOP_EVENT = 1
@@ -188,12 +194,25 @@ const formatWelcomeGlassContent = (state: WelcomeState, selectedChoice: WelcomeC
 
 const isUserFocused = (message: FocusMessage | null) => message?.userFocused ?? message?.userOnTrack
 
-const formatFocusAlertGlassContent = (message: FocusMessage | null) => {
-  if (isUserFocused(message) !== false) {
+const getFocusMessageKey = (message: FocusMessage | null) => `${message?.createdAt || ''}:${message?.message || ''}`
+
+const formatFocusPromptGlassContent = (message: FocusMessage | null, selectedChoice: FocusPromptChoice) => {
+  if (!message || isUserFocused(message) !== false) {
     return GLASSES_IDLE_CONTENT
   }
-  const focusLine = message.message ? message.message.slice(0, 72) : 'Anchor thinks you may be off track.'
-  return `On purpose?\n${focusLine}`.trim()
+  const focusLine = message.message
+    ? message.message.slice(0, 56)
+    : 'It looks like your focus may have shifted.'
+  const yesLabel = selectedChoice === 'yes' ? '> Yes' : '  Yes'
+  const noLabel = selectedChoice === 'no' ? '> No' : '  No'
+  return `${focusLine}\nNo shame. Just noticing.\n\n${yesLabel}\n${noLabel}\n\nOn purpose?`.trim()
+}
+
+const formatFocusPromptResponseGlassContent = (choice: FocusPromptChoice) => {
+  if (choice === 'yes') {
+    return FOCUS_PROMPT_YES_RESPONSE
+  }
+  return FOCUS_PROMPT_NO_RESPONSE
 }
 
 const renderWelcome = (state: WelcomeState, selectedChoice: WelcomeChoice) => {
@@ -288,6 +307,9 @@ async function bootstrap() {
     let selectedWelcomeChoice: WelcomeChoice = 'yes'
     let welcomeResolved = false
     let focusMessagesVisibleAfter = Number.POSITIVE_INFINITY
+    let focusPromptState: FocusPromptState = 'idle'
+    let selectedFocusPromptChoice: FocusPromptChoice = 'yes'
+    let activeFocusPromptMessageKey = ''
 
     const initialWelcomeContent = formatWelcomeGlassContent(welcomeState, selectedWelcomeChoice)
     const helloWorld = new TextContainerProperty({
@@ -387,12 +409,28 @@ async function bootstrap() {
         latestFocusMessage = await fetchLatestFocusMessage()
         renderFocusMessage(latestFocusMessage)
         trackMessageChange(latestFocusMessage)
-        await writeGlasses(formatFocusAlertGlassContent(latestFocusMessage))
+        if (isUserFocused(latestFocusMessage) === false) {
+          const messageKey = getFocusMessageKey(latestFocusMessage)
+          if (messageKey !== activeFocusPromptMessageKey || focusPromptState === 'idle') {
+            focusPromptState = 'asking'
+            selectedFocusPromptChoice = 'yes'
+            activeFocusPromptMessageKey = messageKey
+            logGlassDebug('showing focus prompt', { messageKey, selectedFocusPromptChoice })
+            await writeGlasses(formatFocusPromptGlassContent(latestFocusMessage, selectedFocusPromptChoice))
+          }
+        } else {
+          focusPromptState = 'idle'
+          activeFocusPromptMessageKey = ''
+          await writeGlasses(GLASSES_IDLE_CONTENT)
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to fetch Anchor message.'
         latestFocusMessage = { userOnTrack: false, message, status: 'fetch_error' }
         renderFocusMessage(latestFocusMessage)
-        await writeGlasses(formatFocusAlertGlassContent(latestFocusMessage))
+        focusPromptState = 'asking'
+        selectedFocusPromptChoice = 'yes'
+        activeFocusPromptMessageKey = getFocusMessageKey(latestFocusMessage)
+        await writeGlasses(formatFocusPromptGlassContent(latestFocusMessage, selectedFocusPromptChoice))
       }
     }
 
@@ -443,7 +481,7 @@ async function bootstrap() {
       logGlassDebug('focus session start succeeded')
       await updateWelcomeState('focused')
       window.setTimeout(() => {
-        void writeGlasses(formatFocusAlertGlassContent(latestFocusMessage))
+        void writeGlasses(GLASSES_IDLE_CONTENT)
         void syncSessionState()
       }, 5_000)
     }
@@ -492,6 +530,72 @@ async function bootstrap() {
       }
     }
 
+    const updateFocusPromptSelection = async (choice: FocusPromptChoice) => {
+      if (focusPromptState !== 'asking') {
+        logGlassDebug('ignored focus prompt selection because prompt is not asking', { choice, focusPromptState })
+        return
+      }
+      if (selectedFocusPromptChoice === choice) {
+        logGlassDebug('ignored duplicate focus prompt selection', { choice })
+        return
+      }
+      selectedFocusPromptChoice = choice
+      logGlassDebug('focus prompt selection changed', { choice })
+      await writeGlasses(formatFocusPromptGlassContent(latestFocusMessage, selectedFocusPromptChoice))
+    }
+
+    const handleFocusPromptChoice = async (choice: FocusPromptChoice) => {
+      if (focusPromptState !== 'asking') {
+        logGlassDebug('ignored focus prompt choice because prompt is not asking', { choice, focusPromptState })
+        return
+      }
+      focusPromptState = 'answered'
+      selectedFocusPromptChoice = choice
+      logGlassDebug('focus prompt choice confirmed', { choice })
+      await writeGlasses(formatFocusPromptResponseGlassContent(choice))
+      window.setTimeout(() => {
+        focusPromptState = 'idle'
+        void writeGlasses(GLASSES_IDLE_CONTENT)
+      }, 5_000)
+    }
+
+    const handleFocusPromptGesture = async (eventType: number | undefined) => {
+      if (focusPromptState !== 'asking') {
+        logGlassDebug('ignored gesture because no focus prompt is active', { eventType, focusPromptState })
+        return
+      }
+      const normalizedEventType = eventType === undefined ? CLICK_EVENT : eventType
+      logGlassDebug('handling focus prompt gesture', {
+        eventType,
+        normalizedEventType,
+        selectedFocusPromptChoice,
+        focusPromptState,
+      })
+      if (normalizedEventType === SCROLL_TOP_EVENT) {
+        await updateFocusPromptSelection('yes')
+        return
+      }
+      if (normalizedEventType === SCROLL_BOTTOM_EVENT) {
+        await updateFocusPromptSelection('no')
+        return
+      }
+      if (normalizedEventType === CLICK_EVENT) {
+        await handleFocusPromptChoice(selectedFocusPromptChoice)
+        return
+      }
+      if (normalizedEventType === DOUBLE_CLICK_EVENT) {
+        await handleFocusPromptChoice('no')
+      }
+    }
+
+    const handleTouchGesture = async (eventType: number | undefined) => {
+      if (!welcomeResolved) {
+        await handleWelcomeGesture(eventType)
+        return
+      }
+      await handleFocusPromptGesture(eventType)
+    }
+
     renderWelcome(welcomeState, selectedWelcomeChoice)
     window.setInterval(() => {
       if (welcomeResolved && welcomeState === 'focused' && performance.now() >= focusMessagesVisibleAfter) {
@@ -525,7 +629,7 @@ async function bootstrap() {
         })
         renderTouchEvent(eventType, containerName, source)
         setStatus(`Input event: ${formatEventType(eventType)} from ${containerName}`)
-        void handleWelcomeGesture(eventType)
+        void handleTouchGesture(eventType)
       }
 
       const sys = event.sysEvent
@@ -545,7 +649,7 @@ async function bootstrap() {
           renderTouchEvent(sys.eventType, 'system', source)
           setStatus(`System event: ${formatEventType(sys.eventType)} source:${source}`)
           if (isTouchEventType(sys.eventType)) {
-            void handleWelcomeGesture(sys.eventType)
+            void handleTouchGesture(sys.eventType)
           }
           return
         }
@@ -558,7 +662,7 @@ async function bootstrap() {
           })
           renderTouchEvent(undefined, 'jsonData', 'raw')
           setStatus('Raw jsonData event received. See console.')
-          void handleWelcomeGesture(sys?.eventType)
+          void handleTouchGesture(sys?.eventType)
           return
         }
         console.log('even event', event)
