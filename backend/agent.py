@@ -45,8 +45,8 @@ def get_active_session() -> dict | None:
     return dict(row) if row else None
 
 
-def get_recent_events(session_id: int, minutes: int = 2) -> list[dict]:
-    since = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+def get_recent_events(session_id: int, seconds: int = 30) -> list[dict]:
+    since = (datetime.now() - timedelta(seconds=seconds)).isoformat()
     conn = get_conn()
     rows = conn.execute(
         "SELECT * FROM activity_events WHERE session_id=? AND timestamp > ? ORDER BY timestamp DESC LIMIT 30",
