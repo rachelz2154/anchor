@@ -1,9 +1,12 @@
 import asyncio
 import json
+import logging
 from datetime import datetime, timedelta
 
+log = logging.getLogger("anchor.agent")
+
 from .database import get_conn
-from .memory import get_memory_hint
+from .memory import get_memory_hint, update_relevance
 from .reasoning import check_drift
 
 # Seconds of off-task time before the agent fires a check per mode
@@ -93,19 +96,28 @@ async def agent_loop():
         try:
             session = get_active_session()
             if not session:
+                log.info("agent tick — no active session, skipping")
                 continue
 
             events = get_recent_events(session["id"])
             if not events:
+                log.info("agent tick — session '%s' has no recent events, skipping", session["intent"])
                 continue
 
+            log.info("agent tick — reasoning over %d events for '%s'", len(events), session["intent"])
             domain = get_current_domain(session["id"])
             memory_hint = get_memory_hint(domain, session["intent"], session["mode"]) if domain else ""
 
             await broadcast({"type": "agent_thinking", "message": "Analysing activity window…"})
 
             result = check_drift(session, events, memory_hint)
+            log.info("agent result — drift=%s confidence=%.2f", result.get("is_drift"), result.get("confidence"))
             drift_id = save_drift_check(session["id"], result)
+
+            # Persist relevance classifications the LLM produced
+            for tag in result.get("signal_relevance", []):
+                if tag.get("domain") and tag.get("relevance"):
+                    update_relevance(tag["domain"], session["intent"], session["mode"], tag["relevance"])
 
             await broadcast(
                 {
@@ -116,6 +128,7 @@ async def agent_loop():
                     "is_drift": result["is_drift"],
                     "send_checkpoint": result.get("send_checkpoint", False),
                     "checkpoint_message": result.get("checkpoint_message", ""),
+                    "signal_relevance": result.get("signal_relevance", []),
                 }
             )
 
@@ -137,4 +150,5 @@ async def agent_loop():
                     )
 
         except Exception as exc:
+            log.exception("agent loop error: %s", exc)
             await broadcast({"type": "agent_error", "message": str(exc)})

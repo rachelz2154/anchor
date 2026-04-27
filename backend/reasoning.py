@@ -4,7 +4,7 @@ import os
 from anthropic import Anthropic
 
 client = Anthropic()
-FOCUS_MODEL = os.getenv("ANTHROPIC_FOCUS_MODEL", "claude-haiku-4-5-20251001")
+FOCUS_MODEL = os.getenv("ANTHROPIC_FOCUS_MODEL", "claude-sonnet-4-6")
 
 MODE_INSTRUCTIONS = {
     "light": (
@@ -30,10 +30,21 @@ def _summarise_events(events: list[dict]) -> str:
     for e in events:
         payload = json.loads(e["payload"]) if isinstance(e["payload"], str) else e["payload"]
         if e["type"] in {"tab_change", "tab_active"}:
-            lines.append(
-                f"  Browser tab: {payload.get('domain', 'unknown')} "
-                f"— {payload.get('duration_sec', 0):.0f}s"
-            )
+            domain = payload.get("domain", "unknown")
+            title = payload.get("title", "").strip()
+            path = payload.get("path", "").strip()
+            duration = int(payload.get("duration_sec", 0))
+
+            summary = payload.get("summary", "").strip()
+            detail = domain
+            if path and path not in ("/", ""):
+                detail += path[:80]
+            if title:
+                detail += f' — "{title[:100]}"'
+            if summary and summary not in (title, ""):
+                detail += f' | {summary[:160]}'
+
+            lines.append(f"  Browser: {detail} ({duration}s)")
         elif e["type"] == "accel_snapshot":
             lines.append(f"  Motion/posture: {payload.get('summary', 'no data')}")
         elif e["type"] == "idle":
@@ -61,22 +72,39 @@ Memory context (past behaviour on this domain):
 
 Accelerometer note: if motion data shows prolonged stillness with head-down posture during off-task browsing, weight that as a stronger drift signal.
 
+For each browser tab domain in the activity above, classify its relevance to the declared intent:
+- "context_related": clearly supports the intent (e.g. docs, GitHub, Stack Overflow during coding)
+- "ambiguous": could be work or distraction (e.g. email, Slack)
+- "off_task": no plausible connection to the intent (e.g. Reddit, Twitter, YouTube)
+
 Reply ONLY with valid JSON — no prose, no markdown:
 {{
   "is_drift": true | false,
   "confidence": 0.0–1.0,
   "reasoning": "one concise sentence",
   "send_checkpoint": true | false,
-  "checkpoint_message": "short message for glasses (max 10 words)"
-}}"""
+  "checkpoint_message": "short message for glasses (max 10 words)",
+  "signal_relevance": [{{"domain": "example.com", "relevance": "context_related|ambiguous|off_task"}}]
+}}
+
+Note: confidence means certainty in your assessment — high confidence when signals clearly point one way (either clearly on-track OR clearly drifting). Low confidence when signals are ambiguous. A definitive ON TRACK verdict with strong evidence should score 0.8–0.95, same as a definitive DRIFT verdict."""
 
     response = client.messages.create(
         model=FOCUS_MODEL,
-        max_tokens=300,
+        max_tokens=512,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    return json.loads(response.content[0].text.strip())
+    raw = response.content[0].text.strip()
+
+    # Strip markdown code fences if the model wrapped the JSON
+    if raw.startswith("```"):
+        raw = raw.split("```", 2)[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+
+    return json.loads(raw)
 
 
 def check_user_on_track(session: dict, signals: list[dict]) -> dict:

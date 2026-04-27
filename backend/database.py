@@ -49,15 +49,28 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS domain_memory (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain          TEXT    NOT NULL,
-            intent_type     TEXT    NOT NULL,
-            mode            TEXT    NOT NULL,
-            total_checks    INTEGER NOT NULL DEFAULT 0,
-            continued_count INTEGER NOT NULL DEFAULT 0,
-            switched_count  INTEGER NOT NULL DEFAULT 0,
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain              TEXT    NOT NULL,
+            intent_type         TEXT    NOT NULL,
+            mode                TEXT    NOT NULL,
+            total_checks        INTEGER NOT NULL DEFAULT 0,
+            continued_count     INTEGER NOT NULL DEFAULT 0,
+            switched_count      INTEGER NOT NULL DEFAULT 0,
+            last_relevance      TEXT,
             UNIQUE(domain, intent_type, mode)
         );
     """)
     conn.commit()
+
+    # Migrations — safe to run on every startup
+    _migrate(conn)
+
     conn.close()
+
+
+def _migrate(conn: sqlite3.Connection):
+    """Add columns that didn't exist in earlier schema versions."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(domain_memory)")}
+    if "last_relevance" not in existing:
+        conn.execute("ALTER TABLE domain_memory ADD COLUMN last_relevance TEXT")
+        conn.commit()

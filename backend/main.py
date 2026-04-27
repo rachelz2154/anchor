@@ -1,8 +1,11 @@
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -25,7 +28,7 @@ from .firestore_store import (
     firestore_status,
     set_current_session,
 )
-from .memory import get_all_memory, record_response
+from .memory import get_all_memory, get_metrics, record_response
 
 _broadcast_queue: asyncio.Queue = asyncio.Queue()
 _clients: list[WebSocket] = []
@@ -201,6 +204,11 @@ async def checkpoint_response(drift_check_id: int, body: CheckpointResponseBody)
 @app.get("/memory")
 async def memory():
     return get_all_memory()
+
+
+@app.get("/metrics")
+async def metrics():
+    return get_metrics()
 
 
 @app.get("/firebase-config")
