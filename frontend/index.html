@@ -94,6 +94,7 @@
 
   #session-meta { color: var(--text-dim); font-size: 11px; }
   #latest-message {
+    display: none;
     margin-top: 6px;
     padding: 8px 10px;
     border: 1px solid var(--border);
@@ -102,6 +103,7 @@
     color: var(--text-dim);
     max-width: 720px;
   }
+  #latest-message:not(:empty) { display: block; }
   #latest-message.on-track { border-color: rgba(76,175,110,0.4); color: var(--green); }
   #latest-message.off-track { border-color: rgba(224,85,85,0.4); color: var(--red); }
 
