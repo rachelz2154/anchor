@@ -346,10 +346,32 @@ async def firestore_tab_snapshot(body: FirestoreDocumentBody):
 
 @app.get("/messages/latest")
 async def messages_latest():
-    try:
-        return latest_message() or {}
-    except (FirestoreConfigError, FirestoreRequestError) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    session = get_active_session()
+    if not session:
+        return {}
+    conn = get_conn()
+    row = conn.execute(
+        """
+        SELECT dc.id, dc.reasoning, dc.checkpoint_message, dc.is_drift,
+               dc.sent_to_glasses, dc.triggered_at, fs.intent, fs.mode
+        FROM drift_checks dc
+        JOIN focus_sessions fs ON dc.session_id = fs.id
+        WHERE dc.session_id = ? AND dc.sent_to_glasses = 1
+        ORDER BY dc.triggered_at DESC LIMIT 1
+        """,
+        (session["id"],),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {}
+    return {
+        "userOnTrack": not bool(row["is_drift"]),
+        "message": row["checkpoint_message"] or row["reasoning"],
+        "status": "ok",
+        "sessionIntent": row["intent"],
+        "sessionMode": row["mode"],
+        "createdAt": row["triggered_at"],
+    }
 
 
 @app.post("/messages/clear")

@@ -71,7 +71,7 @@ def get_current_domain(session_id: int) -> str:
 def save_drift_check(session_id: int, result: dict) -> int:
     conn = get_conn()
     cursor = conn.execute(
-        "INSERT INTO drift_checks (session_id, triggered_at, reasoning, confidence, is_drift, sent_to_glasses) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO drift_checks (session_id, triggered_at, reasoning, confidence, is_drift, sent_to_glasses, checkpoint_message) VALUES (?,?,?,?,?,?,?)",
         (
             session_id,
             datetime.now().isoformat(),
@@ -79,6 +79,7 @@ def save_drift_check(session_id: int, result: dict) -> int:
             result["confidence"],
             1 if result["is_drift"] else 0,
             1 if result.get("send_checkpoint") else 0,
+            result.get("checkpoint_message", ""),
         ),
     )
     drift_id = cursor.lastrowid

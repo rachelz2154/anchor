@@ -74,3 +74,8 @@ def _migrate(conn: sqlite3.Connection):
     if "last_relevance" not in existing:
         conn.execute("ALTER TABLE domain_memory ADD COLUMN last_relevance TEXT")
         conn.commit()
+
+    existing_dc = {row[1] for row in conn.execute("PRAGMA table_info(drift_checks)")}
+    if "checkpoint_message" not in existing_dc:
+        conn.execute("ALTER TABLE drift_checks ADD COLUMN checkpoint_message TEXT")
+        conn.commit()
