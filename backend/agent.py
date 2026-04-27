@@ -90,9 +90,9 @@ def save_drift_check(session_id: int, result: dict) -> int:
 # ---------- Main loop ----------
 
 async def agent_loop():
-    """Runs every 30 s, reasons over recent activity, fires checkpoint if drift detected."""
+    """Runs every 10 s, reasons over recent activity, fires checkpoint if drift detected."""
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(10)
         try:
             session = get_active_session()
             if not session:
