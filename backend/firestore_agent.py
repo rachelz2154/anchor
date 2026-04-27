@@ -14,7 +14,7 @@ from .firestore_store import (
 from .reasoning import check_user_on_track
 
 
-CHECK_INTERVAL_SECONDS = int(os.getenv("FIRESTORE_CHECK_INTERVAL_SECONDS", "10"))
+CHECK_INTERVAL_SECONDS = int(os.getenv("FIRESTORE_CHECK_INTERVAL_SECONDS", "15"))
 SIGNAL_WINDOW_SECONDS = int(os.getenv("FOCUS_SIGNAL_WINDOW_SECONDS", "120"))
 _last_check_key: tuple[Any, ...] | None = None
 
