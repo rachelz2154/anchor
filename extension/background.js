@@ -1,15 +1,35 @@
 const ANCHOR_ORIGIN = 'http://localhost:8000';
 const AGENT_URL = `${ANCHOR_ORIGIN}/events`;
 
-let activeTab = { domain: null, title: '', url: '', tabId: null, windowId: null, startedAt: null };
-let lastActiveSignalAt = 0;
+// Domains/patterns to ignore entirely — not meaningful activity
+const SKIP_DOMAINS = new Set(['newtab', 'extensions', 'settings', '']);
+const SKIP_PROTOCOLS = ['chrome:', 'chrome-extension:', 'about:', 'edge:', 'moz-extension:'];
+
+let activeTab = { domain: null, title: null, path: null, summary: null, startedAt: null };
 
 function extractDomain(url) {
   try {
-    return new URL(url).hostname.replace(/^www\./, '');
+    const u = new URL(url);
+    if (SKIP_PROTOCOLS.some(p => u.protocol.startsWith(p))) return null;
+    return u.hostname.replace(/^www\./, '');
   } catch {
     return null;
   }
+}
+
+function extractPath(url) {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/$/, '');
+    const query = u.searchParams.toString();
+    return query ? `${path}?${query.slice(0, 80)}` : path;
+  } catch {
+    return '';
+  }
+}
+
+function shouldSkip(domain) {
+  return !domain || SKIP_DOMAINS.has(domain);
 }
 
 async function postEvent(type, payload) {
@@ -35,39 +55,44 @@ async function getCurrentSession() {
   }
 }
 
-async function writeLiveSignal(type, payload) {
-  const session = await getCurrentSession();
-  if (!session) return;
-  await postEvent(type, payload);
+async function saveState() {
+  await chrome.storage.session.set({ activeTab });
 }
 
-function normalizeTab(tab) {
-  return {
-    domain: extractDomain(tab.url),
-    title: tab.title || '',
-    url: tab.url || '',
-    tabId: tab.id || null,
-    windowId: tab.windowId || null,
-    startedAt: Date.now(),
-  };
+async function restoreState() {
+  const data = await chrome.storage.session.get('activeTab');
+  if (data.activeTab && data.activeTab.domain) {
+    activeTab = data.activeTab;
+  } else {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.url) await setActiveTab(tab);
+  }
 }
 
-async function reportActiveTab(reason) {
-  if (!activeTab.domain) return;
-  const now = Date.now();
-  const durationSec = activeTab.startedAt ? (now - activeTab.startedAt) / 1000 : 0;
-  if (reason === 'heartbeat' && now - lastActiveSignalAt < 9500) return;
-  lastActiveSignalAt = now;
-  await writeLiveSignal('tab_active', {
+async function flushActiveTab() {
+  if (shouldSkip(activeTab.domain) || !activeTab.startedAt) return;
+  const duration_sec = Math.round((Date.now() - activeTab.startedAt) / 1000);
+  if (duration_sec < 2) return;
+  await postEvent('tab_change', {
     domain: activeTab.domain,
     title: activeTab.title || '',
-    url: activeTab.url || '',
-    tabId: activeTab.tabId || 0,
-    windowId: activeTab.windowId || 0,
-    durationSec,
-    duration_sec: durationSec,
-    reason,
+    path: activeTab.path || '',
+    summary: activeTab.summary || '',
+    duration_sec,
   });
+}
+
+async function setActiveTab(tab) {
+  const domain = extractDomain(tab.url);
+  if (shouldSkip(domain)) return;
+  activeTab = {
+    domain,
+    title: tab.title || '',
+    path: extractPath(tab.url),
+    summary: null,   // filled in when content script fires
+    startedAt: Date.now(),
+  };
+  await saveState();
 }
 
 async function captureOpenTabsSnapshot() {
@@ -79,19 +104,19 @@ async function captureOpenTabsSnapshot() {
       title: tab.title || '',
       active: Boolean(tab.active),
       windowId: tab.windowId || 0,
-    })).filter((tab) => tab.domain);
+    })).filter((tab) => tab.domain && !shouldSkip(tab.domain));
     try {
       const response = await fetch(`${ANCHOR_ORIGIN}/firestore/tab-snapshot`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: {
-        source: 'chrome',
-        sessionId: session.id || session.session_id || session.sessionId,
-        sessionIntent: session.intent,
-        sessionMode: session.mode || 'deep',
-        openTabs,
-        createdAt: new Date().toISOString(),
-      } }),
+          source: 'chrome',
+          sessionId: session.id || session.session_id || session.sessionId,
+          sessionIntent: session.intent,
+          sessionMode: session.mode || 'deep',
+          openTabs,
+          createdAt: new Date().toISOString(),
+        } }),
       });
       if (!response.ok) throw new Error(await response.text());
     } catch (error) {
@@ -100,63 +125,57 @@ async function captureOpenTabsSnapshot() {
   });
 }
 
-async function flushActiveTab() {
-  if (!activeTab.domain || !activeTab.startedAt) return;
-  const durationSec = (Date.now() - activeTab.startedAt) / 1000;
-  if (durationSec < 2) return; // skip sub-2s flickers
-  const payload = {
-    domain: activeTab.domain,
-    title: activeTab.title || '',
-    tabId: activeTab.tabId || 0,
-    windowId: activeTab.windowId || 0,
-    durationSec,
-    duration_sec: durationSec,
-  };
-  await writeLiveSignal('tab_change', payload);
-}
+// ── Content script messages ────────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type !== 'page_summary') return;
+  try {
+    const msgDomain = extractDomain(msg.url);
+    if (msgDomain === activeTab.domain && msg.summary) {
+      activeTab.summary = msg.summary;
+      saveState();
+    }
+  } catch {}
+});
+
+// ── Event listeners ────────────────────────────────────────────────────────
+
+chrome.runtime.onStartup.addListener(restoreState);
+chrome.runtime.onInstalled.addListener(restoreState);
 
 chrome.tabs.onActivated.addListener(async (info) => {
+  await restoreState();
   await flushActiveTab();
   const tab = await chrome.tabs.get(info.tabId);
-  activeTab = normalizeTab(tab);
-  await reportActiveTab('activated');
+  await setActiveTab(tab);
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
-  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-    if (!tabs[0] || tabs[0].id !== tabId) return;
+  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!active || active.id !== tabId) return;
+
+  await restoreState();
+  const newDomain = extractDomain(tab.url);
+  if (!shouldSkip(newDomain) && newDomain !== activeTab.domain) {
     await flushActiveTab();
-    activeTab = normalizeTab(tab);
-    await reportActiveTab('updated');
-  });
+  }
+  await setActiveTab(tab);
 });
 
-// Flush current tab every 60s so long dwell times are reported
+// Heartbeat: report cumulative dwell every 60s + capture Firestore tab snapshot
 chrome.alarms.create('heartbeat', { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== 'heartbeat') return;
-  if (!activeTab.domain) return;
-  await reportActiveTab('heartbeat');
+  await restoreState();
+  if (shouldSkip(activeTab.domain) || !activeTab.startedAt) return;
+  const duration_sec = Math.round((Date.now() - activeTab.startedAt) / 1000);
+  await postEvent('tab_change', {
+    domain: activeTab.domain,
+    title: activeTab.title || '',
+    path: activeTab.path || '',
+    duration_sec,
+    heartbeat: true,
+  });
   await captureOpenTabsSnapshot();
 });
-
-setInterval(() => {
-  reportActiveTab('heartbeat').catch((error) => {
-    console.warn('Anchor active tab heartbeat failed', error);
-  });
-}, 10_000);
-
-async function initializeActiveTab() {
-  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-    const tab = tabs[0];
-    if (!tab) return;
-    activeTab = normalizeTab(tab);
-    await reportActiveTab('startup');
-    await captureOpenTabsSnapshot();
-  });
-}
-
-chrome.runtime.onStartup.addListener(initializeActiveTab);
-chrome.runtime.onInstalled.addListener(initializeActiveTab);
-initializeActiveTab();

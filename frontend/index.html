@@ -251,6 +251,32 @@
   .btn-continue { background: var(--gold); color: #000; width: 100%; padding: 10px; border-radius: 8px; }
   .btn-switch { background: transparent; color: var(--text); border: 1px solid var(--border); width: 100%; padding: 10px; border-radius: 8px; }
 
+  /* ── Metrics bar ── */
+  .metrics-bar {
+    display: flex; gap: 1px; background: var(--border);
+    border-radius: 6px; overflow: hidden;
+  }
+  .metric-cell {
+    flex: 1; background: var(--surface);
+    padding: 8px 12px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .metric-label { font-size: 9px; color: var(--text-dim); letter-spacing: 1px; text-transform: uppercase; }
+  .metric-value { font-size: 18px; font-weight: 700; }
+  .metric-value.good { color: var(--green); }
+  .metric-value.warn { color: var(--gold); }
+  .metric-value.bad  { color: var(--red); }
+  .metric-value.dim  { color: var(--text-dim); }
+
+  /* Relevance badge on signal rows */
+  .rel-badge {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+    margin-left: auto;
+  }
+  .rel-context  { background: rgba(76,175,110,0.15); color: var(--green); }
+  .rel-ambiguous{ background: rgba(245,200,66,0.12); color: var(--gold-dim); }
+  .rel-offtask  { background: rgba(224,85,85,0.15);  color: var(--red); }
+
   /* ── Memory table ── */
   table { width: 100%; border-collapse: collapse; font-size: 11px; }
   th { text-align: left; color: var(--text-dim); padding: 4px 8px; border-bottom: 1px solid var(--border); font-weight: 600; }
@@ -335,12 +361,18 @@
     </div>
   </div>
 
-  <!-- Memory table -->
+  <!-- Memory table + metrics -->
   <div class="panel">
     <div class="panel-title">Memory Layer</div>
+    <div class="metrics-bar" id="metrics-bar">
+      <div class="metric-cell"><div class="metric-label">Precision</div><div class="metric-value dim" id="m-precision">—</div></div>
+      <div class="metric-cell"><div class="metric-label">False Alarms</div><div class="metric-value dim" id="m-false-alarm">—</div></div>
+      <div class="metric-cell"><div class="metric-label">Avg Confidence</div><div class="metric-value dim" id="m-confidence">—</div></div>
+      <div class="metric-cell"><div class="metric-label">Checks</div><div class="metric-value dim" id="m-checks">0</div></div>
+    </div>
     <table id="memory-table">
       <thead>
-        <tr><th>Domain</th><th>Intent</th><th>Mode</th><th>Checks</th><th>Drift %</th></tr>
+        <tr><th>Domain</th><th>Mode</th><th>Relevance</th><th>Checks</th><th>Drift %</th></tr>
       </thead>
       <tbody><tr><td colspan="5" class="empty">No memory yet.</td></tr></tbody>
     </table>
@@ -514,13 +546,21 @@
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const desc = formatEventDesc(type, payload);
 
+    // Check if domain already has a known relevance from a previous LLM call
+    const domain = (type === 'tab_change') ? (payload.domain || '').replace(/^www\./, '') : null;
+    const knownRelevance = domain ? domainRelevanceMap[domain] : null;
+    const relInfo = knownRelevance ? RELEVANCE_LABEL[knownRelevance] : null;
+    const badge = relInfo ? `<span class="rel-badge ${relInfo.cls}">${relInfo.text}</span>` : '';
+
     const item = document.createElement('div');
     item.className = 'event-item';
     item.dataset.desc = desc;
+    item.dataset.domain = domain || '';
     item.innerHTML = `
       <span class="event-time">${now}</span>
       <span class="event-source src-${source}">${source}</span>
       <span class="event-desc">${desc}</span>
+      ${badge}
     `;
     list.prepend(item);
 
@@ -533,7 +573,12 @@
   }
 
   function formatEventDesc(type, payload) {
-    if (type === 'tab_change' || type === 'tab_active') return `${payload.domain || 'unknown'} — ${Math.round(payload.durationSec || payload.duration_sec || 0)}s`;
+    if (type === 'tab_change' || type === 'tab_active') {
+      const domain = payload.domain || 'unknown';
+      const dur = Math.round(payload.durationSec || payload.duration_sec || 0);
+      const title = payload.title ? `· "${payload.title.slice(0, 48)}${payload.title.length > 48 ? '…' : ''}"` : '';
+      return `${domain} — ${dur}s ${title}`;
+    }
     if (type === 'accel_snapshot') return payload.summary || 'motion data';
     if (type === 'idle') return `Idle ${Math.round(payload.duration_sec || 0)}s`;
     if (type === 'app_switch') return `${payload.from || '?'} → ${payload.to || '?'}`;
@@ -588,6 +633,9 @@
         setTimeout(() => el.classList.remove('triggered'), 4000);
       });
     }
+
+    // Apply relevance tags to signal rows
+    applyRelevanceTags(msg.signal_relevance);
 
     // Cap history at 20 cards
     while (history.children.length > 20) history.removeChild(history.lastChild);
@@ -685,10 +733,39 @@
     }
   }
 
-  // ── Memory table ─────────────────────────────────────────────────────────
+  // ── Memory table + metrics ───────────────────────────────────────────────
+
+  const RELEVANCE_LABEL = {
+    context_related: { cls: 'rel-context',   text: 'context' },
+    ambiguous:       { cls: 'rel-ambiguous', text: 'ambiguous' },
+    off_task:        { cls: 'rel-offtask',   text: 'off-task' },
+  };
+
+  // Map domain → relevance for signal row tagging
+  const domainRelevanceMap = {};
 
   async function loadMemory() {
-    const rows = await fetch('/memory').then(r => r.json());
+    const [rows, m] = await Promise.all([
+      fetch('/memory').then(r => r.json()),
+      fetch('/metrics').then(r => r.json()),
+    ]);
+
+    // Update metrics bar
+    const setMetric = (id, val, good, bad) => {
+      const el = document.getElementById(id);
+      if (val == null) { el.textContent = '—'; el.className = 'metric-value dim'; return; }
+      el.textContent = val + '%';
+      el.className = 'metric-value ' + (val >= good ? 'good' : val >= bad ? 'warn' : 'bad');
+    };
+    setMetric('m-precision',   m.precision_pct,   80, 50);
+    setMetric('m-false-alarm', m.false_alarm_rate_pct != null ? 100 - m.false_alarm_rate_pct : null, 80, 50);
+    setMetric('m-confidence',  m.avg_confidence_pct, 70, 40);
+    document.getElementById('m-checks').textContent = m.total_checks || 0;
+    document.getElementById('m-checks').className = 'metric-value ' + (m.total_checks > 0 ? 'warn' : 'dim');
+
+    // Update domain relevance map for signal tagging
+    rows.forEach(r => { if (r.last_relevance) domainRelevanceMap[r.domain] = r.last_relevance; });
+
     const tbody = document.querySelector('#memory-table tbody');
     if (!rows.length) {
       tbody.innerHTML = '<tr><td colspan="5" class="empty">No memory yet.</td></tr>';
@@ -697,23 +774,60 @@
     tbody.innerHTML = rows.map(r => {
       const pct = r.total_checks ? Math.round((r.switched_count / r.total_checks) * 100) : 0;
       const cls = pct > 60 ? 'drift-high' : 'drift-low';
+      const rel = r.last_relevance ? RELEVANCE_LABEL[r.last_relevance] : null;
+      const relBadge = rel ? `<span class="rel-badge ${rel.cls}">${rel.text}</span>` : '—';
       return `<tr>
         <td>${r.domain}</td>
-        <td>${r.intent_type}</td>
         <td>${r.mode}</td>
+        <td>${relBadge}</td>
         <td>${r.total_checks}</td>
         <td class="${cls}">${pct}%</td>
       </tr>`;
     }).join('');
   }
 
+  // Apply relevance badge to a signal row after LLM classifies it
+  function applyRelevanceTags(signalRelevance) {
+    if (!signalRelevance?.length) return;
+    signalRelevance.forEach(({ domain, relevance }) => {
+      if (!domain || !relevance) return;
+      domainRelevanceMap[domain] = relevance;
+      const rel = RELEVANCE_LABEL[relevance];
+      if (!rel) return;
+      // Tag all visible signal rows for this domain
+      document.querySelectorAll(`.event-item[data-domain="${domain}"]`).forEach(el => {
+        if (!el.querySelector('.rel-badge')) {
+          const badge = document.createElement('span');
+          badge.className = `rel-badge ${rel.cls}`;
+          badge.textContent = rel.text;
+          el.appendChild(badge);
+        } else {
+          // Update existing badge if relevance changed
+          const b = el.querySelector('.rel-badge');
+          b.className = `rel-badge ${rel.cls}`;
+          b.textContent = rel.text;
+        }
+      });
+    });
+  }
+
   // ── Init ─────────────────────────────────────────────────────────────────
 
   connect();
 
-  // Restore active session on page load
-  fetch('/session/current').then(r => r.json()).then(s => {
+  // Pre-load relevance map and active session on page load
+  Promise.all([
+    fetch('/session/current').then(r => r.json()),
+    fetch('/memory').then(r => r.json()),
+  ]).then(([s, mem]) => {
     renderFocusMessage(null);
+    // Seed domainRelevanceMap from persisted memory
+    mem.forEach(r => { if (r.last_relevance) domainRelevanceMap[r.domain] = r.last_relevance; });
+
+    if (s && s.intent) {
+      onSessionStarted(s);
+      sessionStartTime = new Date(s.started_at + 'Z').getTime();
+    }
   });
 </script>
 </body>
