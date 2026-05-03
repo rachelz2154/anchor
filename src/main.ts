@@ -28,6 +28,14 @@ type FocusSession = {
   active?: number | boolean
 }
 
+type SessionSummary = {
+  total_minutes: number
+  focus_minutes: number
+  drift_count: number
+  back_on_track_count: number
+  focus_score: number
+}
+
 type ImuState = {
   mode: 'Focus' | 'Distracted'
   energy: number
@@ -40,20 +48,24 @@ type ImuState = {
 }
 
 type WelcomeChoice = 'yes' | 'no'
-
 type WelcomeState = 'choosing' | 'starting' | 'focused' | 'declined'
-
 type FocusPromptChoice = 'yes' | 'no'
-
 type FocusPromptState = 'idle' | 'asking' | 'answered'
-
 type BreakState = 'idle' | 'active'
+type BreakOverState = 'idle' | 'asking'
+type SessionEndState = 'idle' | 'showing'
+
+// ── ASCII icons ────────────────────────────────────────────────────────────
+const ICON_ROBOT  = ' [^_^] '
+const ICON_WALK   = '  ~O>  '
+const ICON_COFFEE = ' _( )_ '
+const ICON_BELL   = '  /!\\  '
+const ICON_CLAP   = '  \\o/  '
+const ICON_GLOBE  = '  (o)  '
+const ICON_FLAG   = '  |>>  '
 
 const GLASSES_IDLE_CONTENT = ''
-const FOCUS_PROMPT_YES_RESPONSE = "Ok, I'll check back in a few."
-const FOCUS_PROMPT_NO_RESPONSE = 'No worries. Take a breath. You can choose the next right step.'
 const BREAK_DURATION_MS = 5 * 60 * 1000
-const IMU_SIGNAL_INTERVAL_MS = 5_000
 const HEAD_DOWN_AXIS_THRESHOLD = -6
 const HEAD_DOWN_TRIGGER_SECONDS = 10
 
@@ -65,9 +77,7 @@ const FOREGROUND_ENTER_EVENT = 4
 const FOREGROUND_EXIT_EVENT = 5
 const ABNORMAL_EXIT_EVENT = 6
 
-if (!app) {
-  throw new Error('Missing #app root element.')
-}
+if (!app) throw new Error('Missing #app root element.')
 
 app.innerHTML = `
   <main class="shell">
@@ -114,23 +124,14 @@ const focusMetaNode = document.querySelector<HTMLParagraphElement>('#focus-meta'
 const focusHistoryNode = document.querySelector<HTMLDivElement>('#focus-history')
 
 if (
-  !statusNode ||
-  !welcomeCard ||
-  !welcomeMessageNode ||
-  !gestureStatusNode ||
-  !eventFeedNode ||
-  !debugLogNode ||
-  !focusCard ||
-  !focusMessageNode ||
-  !focusMetaNode ||
-  !focusHistoryNode
+  !statusNode || !welcomeCard || !welcomeMessageNode || !gestureStatusNode ||
+  !eventFeedNode || !debugLogNode || !focusCard || !focusMessageNode ||
+  !focusMetaNode || !focusHistoryNode
 ) {
   throw new Error('Missing required Anchor UI elements.')
 }
 
-const setStatus = (message: string) => {
-  statusNode.textContent = message
-}
+const setStatus = (message: string) => { statusNode.textContent = message }
 
 const touchEventHistory: string[] = []
 const debugLogHistory: string[] = []
@@ -154,7 +155,9 @@ const renderTouchEvent = (eventType: number | undefined, containerName: string, 
   const time = new Date().toLocaleTimeString()
   touchEventHistory.unshift(`${time} ${formatEventType(eventType)} from ${containerName} source:${source}`)
   while (touchEventHistory.length > 8) touchEventHistory.pop()
-  eventFeedNode.innerHTML = touchEventHistory.map((item) => `<div class="event-feed-item">${item}</div>`).join('')
+  eventFeedNode.innerHTML = touchEventHistory
+    .map((item) => `<div class="event-feed-item">${item}</div>`)
+    .join('')
 }
 
 const formatEventType = (eventType: number | undefined) => {
@@ -178,57 +181,74 @@ const isTouchEventType = (eventType: number | undefined) =>
 
 const logGlassDebug = (message: string, data?: Record<string, unknown>) => {
   renderDebugLog(message, data)
-  if (data) {
-    console.log(`[anchor:g2] ${message}`, data)
-    return
-  }
+  if (data) { console.log(`[anchor:g2] ${message}`, data); return }
   console.log(`[anchor:g2] ${message}`)
 }
 
+// ── Glass content formatters ────────────────────────────────────────────────
+
+const yesNoRow = (selected: 'yes' | 'no') => {
+  const y = selected === 'yes' ? '[ Yes ]' : '  Yes  '
+  const n = selected === 'no'  ? '[ No  ]' : '  No   '
+  return `${y}   ${n}`
+}
+
 const formatWelcomeGlassContent = (state: WelcomeState, selectedChoice: WelcomeChoice) => {
-  if (state === 'focused') {
-    return 'Work session begun'
-  }
-  if (state === 'starting') {
-    return `I'm Anchor.\nStarting focus...`.trim()
-  }
-  if (state === 'declined') {
-    return `I'm Anchor.\nNo problem.\n\nCome back when ready.`.trim()
-  }
-  const yesLabel = selectedChoice === 'yes' ? '> Yes' : '  Yes'
-  const noLabel = selectedChoice === 'no' ? '> No' : '  No'
-  return `Ready to focus?\n\n${yesLabel}\n${noLabel}`.trim()
+  if (state === 'focused') return 'Work session begun'
+  if (state === 'starting') return `${ICON_ROBOT}\n\nStarting focus...`
+  if (state === 'declined') return `${ICON_ROBOT}\n\nNo problem.\nCome back when ready.`
+  return `${ICON_ROBOT}\n\nI'm Anchor.\nReady to focus?\n\n${yesNoRow(selectedChoice)}`
 }
 
 const isUserFocused = (message: FocusMessage | null) => message?.userFocused ?? message?.userOnTrack
 
-const getFocusMessageKey = (message: FocusMessage | null) => `${message?.createdAt || ''}:${message?.message || ''}`
+const getFocusMessageKey = (message: FocusMessage | null) =>
+  `${message?.createdAt || ''}:${message?.message || ''}`
+
+const pickDriftIcon = (message: FocusMessage | null) => {
+  const text = (message?.message || '').toLowerCase()
+  if (
+    text.includes('tab') || text.includes('site') || text.includes('browser') ||
+    text.includes('relat') || text.includes('project') || text.includes('web')
+  ) return ICON_GLOBE
+  return ICON_WALK
+}
 
 const formatFocusPromptGlassContent = (message: FocusMessage | null, selectedChoice: FocusPromptChoice) => {
-  if (!message || isUserFocused(message) !== false) {
-    return GLASSES_IDLE_CONTENT
-  }
-  const focusLine = message.message
-    ? message.message.slice(0, 56)
-    : 'It looks like your focus may have shifted.'
-  const yesLabel = selectedChoice === 'yes' ? '> Yes' : '  Yes'
-  const noLabel = selectedChoice === 'no' ? '> No' : '  No'
-  return `${focusLine}\nNo shame. Just noticing.\n\nOn purpose?\n${yesLabel}\n${noLabel}`.trim()
+  if (!message || isUserFocused(message) !== false) return GLASSES_IDLE_CONTENT
+  const icon = pickDriftIcon(message)
+  const focusLine = (message.message ?? 'It looks like your focus may have shifted.').slice(0, 72)
+  return `${icon}\n\n${focusLine}\nOn purpose?\n\n${yesNoRow(selectedChoice)}`
 }
 
-const formatFocusPromptResponseGlassContent = (choice: FocusPromptChoice) => {
-  if (choice === 'yes') {
-    return FOCUS_PROMPT_YES_RESPONSE
-  }
-  return FOCUS_PROMPT_NO_RESPONSE
-}
+// Yes = "I meant to do this"  No = "I drifted — back on track"
+const formatFocusPromptResponseGlassContent = (choice: FocusPromptChoice) =>
+  choice === 'yes'
+    ? `${ICON_ROBOT}\n\nOk, I'll check\nback in a few.`
+    : `${ICON_CLAP}\n\nGood reset!\nBack on track.`
 
 const formatBreakGlassContent = (remainingMs: number) => {
-  const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000))
-  const minutes = Math.floor(remainingSeconds / 60)
-  const seconds = remainingSeconds % 60
-  const timer = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
-  return `5 mins break\n${timer}\n\nTap to exit break`.trim()
+  const secs = Math.max(0, Math.ceil(remainingMs / 1000))
+  const m = Math.floor(secs / 60).toString().padStart(2, '0')
+  const s = (secs % 60).toString().padStart(2, '0')
+  return `${ICON_COFFEE}\n\n5 mins break\n    ${m}:${s}`
+}
+
+const formatBreakOverGlassContent = (selected: 'yes' | 'no') =>
+  `${ICON_BELL}\n\nBreak over.\nBack to focus?\n\n${yesNoRow(selected)}`
+
+const formatSessionEndGlassContent = (summary: SessionSummary) => {
+  const f = (n: number, w: number) => String(n).padStart(w)
+  return [
+    ICON_FLAG,
+    '',
+    'Session done!',
+    '',
+    `Focus  ${f(summary.focus_minutes, 3)}/${summary.total_minutes} min`,
+    `Drifts      ${f(summary.drift_count, 4)}`,
+    `On track    ${f(summary.back_on_track_count, 4)}`,
+    `Score       ${f(summary.focus_score, 3)}%`,
+  ].join('\n')
 }
 
 const renderWelcome = (state: WelcomeState, selectedChoice: WelcomeChoice) => {
@@ -282,11 +302,11 @@ const trackMessageChange = (message: FocusMessage | null) => {
     .join('')
 }
 
+// ── API calls ───────────────────────────────────────────────────────────────
+
 const fetchLatestFocusMessage = async () => {
   const response = await fetch(`${ANCHOR_API_ORIGIN}/messages/latest`)
-  if (!response.ok) {
-    throw new Error(`Anchor message fetch failed: ${response.status}`)
-  }
+  if (!response.ok) throw new Error(`Anchor message fetch failed: ${response.status}`)
   const message = (await response.json()) as FocusMessage
   return message.message ? message : null
 }
@@ -298,108 +318,85 @@ const fetchCurrentSession = async () => {
   return session?.intent ? session : null
 }
 
+const fetchSessionSummary = async (): Promise<SessionSummary | null> => {
+  try {
+    const response = await fetch(`${ANCHOR_API_ORIGIN}/session/summary`)
+    if (!response.ok) return null
+    return (await response.json()) as SessionSummary
+  } catch { return null }
+}
+
 const startFocusSession = async () => {
   const response = await fetch(`${ANCHOR_API_ORIGIN}/session/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ intent: 'work/study', mode: 'deep' }),
   })
-  if (!response.ok) {
-    throw new Error(`Unable to start focus session: ${response.status}`)
-  }
+  if (!response.ok) throw new Error(`Unable to start focus session: ${response.status}`)
 }
 
 const clearFocusMessage = async () => {
   const response = await fetch(`${ANCHOR_API_ORIGIN}/messages/clear`, { method: 'POST' })
-  if (!response.ok) {
-    throw new Error(`Unable to clear focus message: ${response.status}`)
-  }
+  if (!response.ok) throw new Error(`Unable to clear focus message: ${response.status}`)
 }
 
-const formatImuSignalSummary = (imu: ImuState) => {
-  const posture = imu.headDownSeconds >= HEAD_DOWN_TRIGGER_SECONDS
-    ? `possible head-down/phone posture for ${Math.round(imu.headDownSeconds)}s`
-    : 'no sustained head-down posture'
-  return `${imu.mode}; ${posture}; motion energy ${imu.energy.toFixed(2)}, moving ${(imu.movingFrac * 100).toFixed(0)}%`
-}
-
-const postImuSignal = async (imu: ImuState) => {
-  const response = await fetch(`${ANCHOR_API_ORIGIN}/events`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      source: 'glasses',
-      type: 'accel_snapshot',
-      payload: {
-        summary: formatImuSignalSummary(imu),
-        mode: imu.mode,
-        energy: Number(imu.energy.toFixed(3)),
-        movingFrac: Number(imu.movingFrac.toFixed(3)),
-        possibleHeadDown: imu.possibleHeadDown,
-        headDownSeconds: Number(imu.headDownSeconds.toFixed(1)),
-        x: Number(imu.x.toFixed(2)),
-        y: Number(imu.y.toFixed(2)),
-        z: Number(imu.z.toFixed(2)),
-      },
-    }),
-  })
-  if (!response.ok) {
-    throw new Error(`Unable to post IMU signal: ${response.status}`)
-  }
-}
+// ── Bootstrap ───────────────────────────────────────────────────────────────
 
 async function bootstrap() {
   try {
     const bridge = await waitForEvenAppBridge()
-
     setStatus('Bridge connected. Rendering to the glasses...')
+
     let latestFocusMessage: FocusMessage | null = null
-    let latestImuState: ImuState | null = null
     let activeSessionId: number | null = null
     let messagePollInterval: number | null = null
     let inactiveRendered = false
+
     let welcomeState: WelcomeState = 'choosing'
     let selectedWelcomeChoice: WelcomeChoice = 'yes'
     let welcomeResolved = false
     let focusMessagesVisibleAfter = Number.POSITIVE_INFINITY
+
     let focusPromptState: FocusPromptState = 'idle'
     let selectedFocusPromptChoice: FocusPromptChoice = 'yes'
     let activeFocusPromptMessageKey = ''
     let dismissedFocusPromptMessageKey = ''
+
     let breakState: BreakState = 'idle'
     let breakEndsAt = 0
     let breakTimerInterval: number | null = null
-    let lastImuSignalPostedAt = 0
+    let breakOverState: BreakOverState = 'idle'
+    let selectedBreakOverChoice: 'yes' | 'no' = 'yes'
+
+    let sessionEndState: SessionEndState = 'idle'
+
     let imuSignalPostInFlight = false
 
     const initialWelcomeContent = formatWelcomeGlassContent(welcomeState, selectedWelcomeChoice)
-    const helloWorld = new TextContainerProperty({
+    const helloWorld: TextContainerProperty = {
       xPosition: 0,
       yPosition: 0,
-      width: 576,
-      height: 288,
+      width: 488,
+      height: 220,
       borderWidth: 0,
-      borderColor: 5,
       paddingLength: 12,
       containerID: 1,
       containerName: 'hello',
       content: initialWelcomeContent,
       isEventCapture: 1,
-    })
+    }
 
-    const result = await bridge.createStartUpPageContainer(
-      new CreateStartUpPageContainer({
-        containerTotalNum: 1,
-        textObject: [helloWorld],
-      }),
-    )
+    const result = await bridge.createStartUpPageContainer({
+      containerTotalNum: 1,
+      textObject: [helloWorld],
+    })
 
     if (result !== 0) {
       setStatus(`The bridge connected, but page creation failed with code ${result}.`)
       return
     }
 
-    // textContainerUpgrade is async, so keep only the latest pending display update.
+    // Queue-based write: skip duplicates, hold one pending write while in-flight.
     let glassWriteInFlight = false
     let lastGlassContent = initialWelcomeContent
     let queuedGlassContent: string | null = null
@@ -422,19 +419,12 @@ async function bootstrap() {
           queuedGlassContent = null
           logGlassDebug('writing glasses content', { content: contentToWrite })
           await bridge.textContainerUpgrade(
-            new TextContainerUpgrade({
-              containerID: 1,
-              containerName: 'hello',
-              content: contentToWrite,
-            }),
+            new TextContainerUpgrade({ containerID: 1, containerName: 'hello', content: contentToWrite }),
           )
           lastGlassContent = contentToWrite
           logGlassDebug('glasses content write complete', { content: contentToWrite })
           nextContent = queuedGlassContent
-          if (nextContent === lastGlassContent) {
-            queuedGlassContent = null
-            nextContent = null
-          }
+          if (nextContent === lastGlassContent) { queuedGlassContent = null; nextContent = null }
         }
       } catch (err) {
         console.warn('textContainerUpgrade failed', err)
@@ -442,6 +432,8 @@ async function bootstrap() {
         glassWriteInFlight = false
       }
     }
+
+    // ── Welcome flow ─────────────────────────────────────────────────────────
 
     const updateWelcomeState = async (state: WelcomeState) => {
       logGlassDebug('welcome state transition', { from: welcomeState, to: state, selectedWelcomeChoice })
@@ -451,18 +443,91 @@ async function bootstrap() {
     }
 
     const updateWelcomeSelection = async (choice: WelcomeChoice) => {
-      if (welcomeResolved) {
-        logGlassDebug('ignored selection because welcome is resolved', { choice, welcomeState })
-        return
-      }
-      if (selectedWelcomeChoice === choice) {
-        logGlassDebug('ignored duplicate welcome selection', { choice, welcomeState })
-        return
-      }
-      logGlassDebug('welcome selection changed', { from: selectedWelcomeChoice, to: choice })
+      if (welcomeResolved) { logGlassDebug('ignored selection because welcome is resolved', { choice }); return }
+      if (selectedWelcomeChoice === choice) { logGlassDebug('ignored duplicate welcome selection', { choice }); return }
       selectedWelcomeChoice = choice
       renderWelcome(welcomeState, selectedWelcomeChoice)
       await writeGlasses(formatWelcomeGlassContent(welcomeState, selectedWelcomeChoice))
+    }
+
+    const handleWelcomeGesture = async (eventType: number | undefined) => {
+      if (welcomeResolved) { logGlassDebug('ignored gesture because welcome is resolved'); return }
+      const norm = eventType ?? CLICK_EVENT
+      logGlassDebug('handling welcome gesture', { norm, selectedWelcomeChoice })
+      if (norm === SCROLL_TOP_EVENT) { await updateWelcomeSelection('yes'); return }
+      if (norm === SCROLL_BOTTOM_EVENT) { await updateWelcomeSelection('no'); return }
+      if (norm === CLICK_EVENT) { selectedWelcomeChoice = 'yes'; await handleWelcomeChoice('yes'); return }
+      if (norm === DOUBLE_CLICK_EVENT) { selectedWelcomeChoice = 'no'; await handleWelcomeChoice('no') }
+    }
+
+    const handleWelcomeChoice = async (choice: WelcomeChoice) => {
+      if (welcomeResolved) { logGlassDebug('ignored choice because welcome is resolved'); return }
+      logGlassDebug('welcome choice confirmed', { choice })
+      welcomeResolved = true
+      if (choice === 'no') { await updateWelcomeState('declined'); return }
+      focusMessagesVisibleAfter = performance.now() + 5_000
+      await updateWelcomeState('starting')
+      try {
+        await startFocusSession()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to start focus session.'
+        setStatus(message)
+        logGlassDebug('focus session start failed', { message })
+        return
+      }
+      await updateWelcomeState('focused')
+      window.setTimeout(() => {
+        void writeGlasses(GLASSES_IDLE_CONTENT)
+        void syncSessionState()
+      }, 5_000)
+    }
+
+    // ── Session polling ───────────────────────────────────────────────────────
+
+    const syncSessionState = async () => {
+      try {
+        const session = await fetchCurrentSession()
+        if (!session) { await stopMessagePolling(); return }
+        await startMessagePolling(session)
+      } catch {
+        await stopMessagePolling()
+      }
+    }
+
+    const startMessagePolling = async (session: FocusSession) => {
+      if (session.id === activeSessionId && messagePollInterval !== null) return
+      activeSessionId = session.id ?? null
+      inactiveRendered = false
+      await refreshFocusMessage()
+      messagePollInterval = window.setInterval(() => { void refreshFocusMessage() }, 15_000)
+    }
+
+    const stopMessagePolling = async () => {
+      if (messagePollInterval !== null) { window.clearInterval(messagePollInterval); messagePollInterval = null }
+      const wasActive = activeSessionId !== null && welcomeState === 'focused'
+      if (inactiveRendered && activeSessionId === null && latestFocusMessage === null) return
+      activeSessionId = null
+      latestFocusMessage = null
+      inactiveRendered = true
+      dismissedFocusPromptMessageKey = ''
+      stopBreakTimer()
+      breakState = 'idle'
+      breakEndsAt = 0
+      breakOverState = 'idle'
+      renderNoActiveSession()
+      if (wasActive) {
+        const summary = await fetchSessionSummary()
+        if (summary && summary.total_minutes > 0) {
+          sessionEndState = 'showing'
+          await writeGlasses(formatSessionEndGlassContent(summary))
+          window.setTimeout(() => {
+            sessionEndState = 'idle'
+            void writeGlasses(GLASSES_IDLE_CONTENT)
+          }, 15_000)
+          return
+        }
+      }
+      await writeGlasses(GLASSES_IDLE_CONTENT)
     }
 
     const refreshFocusMessage = async () => {
@@ -472,26 +537,19 @@ async function bootstrap() {
         if (latestFocusMessage && latestMessageKey === dismissedFocusPromptMessageKey) {
           latestFocusMessage = null
           renderFocusMessage(null)
-          logGlassDebug('skipping dismissed focus message', { latestMessageKey })
+          logGlassDebug('skipping dismissed focus message')
           return
         }
         renderFocusMessage(latestFocusMessage)
         trackMessageChange(latestFocusMessage)
-        if (focusPromptState !== 'idle') {
-          logGlassDebug('skipping focus state update while prompt flow is active', { focusPromptState })
-          return
-        }
-        if (breakState === 'active') {
-          logGlassDebug('skipping focus prompt while break is active')
-          return
-        }
+        if (focusPromptState !== 'idle' || breakState === 'active' ||
+            breakOverState === 'asking' || sessionEndState === 'showing') return
         if (isUserFocused(latestFocusMessage) === false) {
           const messageKey = getFocusMessageKey(latestFocusMessage)
-          if (messageKey !== activeFocusPromptMessageKey || focusPromptState === 'idle') {
+          if (messageKey !== activeFocusPromptMessageKey) {
             focusPromptState = 'asking'
             selectedFocusPromptChoice = 'yes'
             activeFocusPromptMessageKey = messageKey
-            logGlassDebug('showing focus prompt', { messageKey, selectedFocusPromptChoice })
             await writeGlasses(formatFocusPromptGlassContent(latestFocusMessage, selectedFocusPromptChoice))
           }
         } else {
@@ -503,14 +561,8 @@ async function bootstrap() {
         const message = error instanceof Error ? error.message : 'Unable to fetch Anchor message.'
         latestFocusMessage = { userOnTrack: false, message, status: 'fetch_error' }
         renderFocusMessage(latestFocusMessage)
-        if (focusPromptState !== 'idle') {
-          logGlassDebug('skipping fetch-error state update while prompt flow is active', { focusPromptState })
-          return
-        }
-        if (breakState === 'active') {
-          logGlassDebug('skipping fetch-error focus prompt while break is active')
-          return
-        }
+        if (focusPromptState !== 'idle' || breakState === 'active' ||
+            breakOverState === 'asking' || sessionEndState === 'showing') return
         focusPromptState = 'asking'
         selectedFocusPromptChoice = 'yes'
         activeFocusPromptMessageKey = getFocusMessageKey(latestFocusMessage)
@@ -518,37 +570,38 @@ async function bootstrap() {
       }
     }
 
-    const stopMessagePolling = async () => {
-      if (messagePollInterval !== null) {
-        window.clearInterval(messagePollInterval)
-        messagePollInterval = null
-      }
-      if (inactiveRendered && activeSessionId === null && latestFocusMessage === null) return
-      activeSessionId = null
-      latestFocusMessage = null
-      inactiveRendered = true
-      dismissedFocusPromptMessageKey = ''
-      stopBreakTimer()
-      breakState = 'idle'
-      breakEndsAt = 0
-      renderNoActiveSession()
-      await writeGlasses(GLASSES_IDLE_CONTENT)
+    // ── Drift / focus prompt flow ─────────────────────────────────────────────
+
+    const updateFocusPromptSelection = async (choice: FocusPromptChoice) => {
+      if (focusPromptState !== 'asking' || selectedFocusPromptChoice === choice) return
+      selectedFocusPromptChoice = choice
+      await writeGlasses(formatFocusPromptGlassContent(latestFocusMessage, choice))
     }
 
-    const startMessagePolling = async (session: FocusSession) => {
-      if (session.id === activeSessionId && messagePollInterval !== null) return
-      activeSessionId = session.id || null
-      inactiveRendered = false
-      await refreshFocusMessage()
-      messagePollInterval = window.setInterval(() => {
-        void refreshFocusMessage()
-      }, 15_000)
+    const handleFocusPromptChoice = async (choice: FocusPromptChoice) => {
+      if (focusPromptState !== 'asking') return
+      focusPromptState = 'answered'
+      dismissedFocusPromptMessageKey = activeFocusPromptMessageKey
+      latestFocusMessage = null
+      renderFocusMessage(null)
+      logGlassDebug('focus prompt choice confirmed', { choice })
+      await writeGlasses(formatFocusPromptResponseGlassContent(choice))
+      try { await clearFocusMessage() } catch (e) { logGlassDebug('clear message failed', { e }) }
+      window.setTimeout(() => { focusPromptState = 'idle'; void writeGlasses(GLASSES_IDLE_CONTENT) }, 5_000)
     }
+
+    const handleFocusPromptGesture = async (eventType: number | undefined) => {
+      const norm = eventType ?? CLICK_EVENT
+      if (norm === SCROLL_TOP_EVENT) { await updateFocusPromptSelection('yes'); return }
+      if (norm === SCROLL_BOTTOM_EVENT) { await updateFocusPromptSelection('no'); return }
+      if (norm === CLICK_EVENT) { await handleFocusPromptChoice(selectedFocusPromptChoice); return }
+      if (norm === DOUBLE_CLICK_EVENT) { await handleFocusPromptChoice('no') }
+    }
+
+    // ── Break flow ────────────────────────────────────────────────────────────
 
     const stopBreakTimer = () => {
-      if (breakTimerInterval === null) return
-      window.clearInterval(breakTimerInterval)
-      breakTimerInterval = null
+      if (breakTimerInterval !== null) { window.clearInterval(breakTimerInterval); breakTimerInterval = null }
     }
 
     const renderBreakState = async () => {
@@ -556,213 +609,72 @@ async function bootstrap() {
     }
 
     const exitBreak = async () => {
-      if (breakState !== 'active') {
-        logGlassDebug('ignored break exit because no break is active', { breakState })
-        return
-      }
+      if (breakState !== 'active') { logGlassDebug('ignored break exit — not active'); return }
       stopBreakTimer()
       breakState = 'idle'
       breakEndsAt = 0
-      logGlassDebug('break exited')
-      await writeGlasses('Break over.\nBack to focus.')
-      window.setTimeout(() => {
-        void writeGlasses(GLASSES_IDLE_CONTENT)
-      }, 3_000)
+      breakOverState = 'asking'
+      selectedBreakOverChoice = 'yes'
+      await writeGlasses(formatBreakOverGlassContent('yes'))
     }
 
     const startBreak = async () => {
-      if (breakState === 'active') {
-        logGlassDebug('ignored break start because break is already active')
-        return
-      }
-      if (focusPromptState === 'asking') {
-        logGlassDebug('ignored break start because focus prompt is active')
-        return
-      }
-      if (welcomeState !== 'focused') {
-        logGlassDebug('ignored break start because focus session is not active', { welcomeState })
-        return
-      }
+      if (breakState === 'active') { logGlassDebug('break already active'); return }
+      if (focusPromptState === 'asking') { logGlassDebug('cannot start break while prompt is active'); return }
+      if (welcomeState !== 'focused') { logGlassDebug('cannot start break — no active session'); return }
       breakState = 'active'
       breakEndsAt = performance.now() + BREAK_DURATION_MS
       focusPromptState = 'idle'
       activeFocusPromptMessageKey = ''
-      logGlassDebug('break started', { durationMs: BREAK_DURATION_MS })
       await renderBreakState()
       stopBreakTimer()
       breakTimerInterval = window.setInterval(() => {
         if (breakState !== 'active') return
-        if (performance.now() >= breakEndsAt) {
-          void exitBreak()
-          return
-        }
+        if (performance.now() >= breakEndsAt) { void exitBreak(); return }
         void renderBreakState()
       }, 1_000)
     }
 
-    const handleWelcomeChoice = async (choice: WelcomeChoice) => {
-      if (welcomeResolved) {
-        logGlassDebug('ignored choice because welcome is resolved', { choice, welcomeState })
+    const handleBreakOverGesture = async (eventType: number | undefined) => {
+      const norm = eventType ?? CLICK_EVENT
+      if (norm === SCROLL_TOP_EVENT) {
+        selectedBreakOverChoice = 'yes'
+        await writeGlasses(formatBreakOverGlassContent('yes'))
         return
       }
-      logGlassDebug('welcome choice confirmed', { choice })
-      welcomeResolved = true
-      if (choice === 'no') {
-        await updateWelcomeState('declined')
+      if (norm === SCROLL_BOTTOM_EVENT) {
+        selectedBreakOverChoice = 'no'
+        await writeGlasses(formatBreakOverGlassContent('no'))
         return
       }
-      focusMessagesVisibleAfter = performance.now() + 5_000
-      await updateWelcomeState('starting')
-      try {
-        await startFocusSession()
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unable to start focus session.'
-        setStatus(message)
-        logGlassDebug('focus session start failed', { message })
-        return
-      }
-      logGlassDebug('focus session start succeeded')
-      await updateWelcomeState('focused')
-      window.setTimeout(() => {
-        void writeGlasses(GLASSES_IDLE_CONTENT)
-        void syncSessionState()
-      }, 5_000)
-    }
-
-    const syncSessionState = async () => {
-      try {
-        const session = await fetchCurrentSession()
-        if (!session) {
-          await stopMessagePolling()
-          return
+      if (norm === CLICK_EVENT || norm === DOUBLE_CLICK_EVENT) {
+        breakOverState = 'idle'
+        logGlassDebug('break-over resolved', { choice: selectedBreakOverChoice })
+        if (selectedBreakOverChoice === 'no') {
+          void startBreak()
+        } else {
+          await writeGlasses(GLASSES_IDLE_CONTENT)
         }
-        await startMessagePolling(session)
-      } catch {
-        await stopMessagePolling()
       }
     }
 
-    const handleWelcomeGesture = async (eventType: number | undefined) => {
-      if (welcomeResolved) {
-        logGlassDebug('ignored gesture because welcome is resolved', { eventType, welcomeState })
-        return
-      }
-      const normalizedEventType = eventType === undefined ? CLICK_EVENT : eventType
-      logGlassDebug('handling welcome gesture', {
-        eventType,
-        normalizedEventType,
-        selectedWelcomeChoice,
-        welcomeState,
-      })
-      if (normalizedEventType === SCROLL_TOP_EVENT) {
-        await updateWelcomeSelection('yes')
-        return
-      }
-      if (normalizedEventType === SCROLL_BOTTOM_EVENT) {
-        await updateWelcomeSelection('no')
-        return
-      }
-      if (normalizedEventType === CLICK_EVENT) {
-        selectedWelcomeChoice = 'yes'
-        await handleWelcomeChoice('yes')
-        return
-      }
-      if (normalizedEventType === DOUBLE_CLICK_EVENT) {
-        selectedWelcomeChoice = 'no'
-        await handleWelcomeChoice('no')
-      }
-    }
-
-    const updateFocusPromptSelection = async (choice: FocusPromptChoice) => {
-      if (focusPromptState !== 'asking') {
-        logGlassDebug('ignored focus prompt selection because prompt is not asking', { choice, focusPromptState })
-        return
-      }
-      if (selectedFocusPromptChoice === choice) {
-        logGlassDebug('ignored duplicate focus prompt selection', { choice })
-        return
-      }
-      selectedFocusPromptChoice = choice
-      logGlassDebug('focus prompt selection changed', { choice })
-      await writeGlasses(formatFocusPromptGlassContent(latestFocusMessage, selectedFocusPromptChoice))
-    }
-
-    const handleFocusPromptChoice = async (choice: FocusPromptChoice) => {
-      if (focusPromptState !== 'asking') {
-        logGlassDebug('ignored focus prompt choice because prompt is not asking', { choice, focusPromptState })
-        return
-      }
-      focusPromptState = 'answered'
-      selectedFocusPromptChoice = choice
-      dismissedFocusPromptMessageKey = activeFocusPromptMessageKey
-      latestFocusMessage = null
-      renderFocusMessage(null)
-      logGlassDebug('focus prompt choice confirmed', { choice })
-      await writeGlasses(formatFocusPromptResponseGlassContent(choice))
-      try {
-        await clearFocusMessage()
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unable to clear focus message.'
-        logGlassDebug('focus message clear failed', { message })
-      }
-      window.setTimeout(() => {
-        focusPromptState = 'idle'
-        void writeGlasses(GLASSES_IDLE_CONTENT)
-      }, 5_000)
-    }
-
-    const handleFocusPromptGesture = async (eventType: number | undefined) => {
-      if (focusPromptState !== 'asking') {
-        logGlassDebug('ignored gesture because no focus prompt is active', { eventType, focusPromptState })
-        return
-      }
-      const normalizedEventType = eventType === undefined ? CLICK_EVENT : eventType
-      logGlassDebug('handling focus prompt gesture', {
-        eventType,
-        normalizedEventType,
-        selectedFocusPromptChoice,
-        focusPromptState,
-      })
-      if (normalizedEventType === SCROLL_TOP_EVENT) {
-        await updateFocusPromptSelection('yes')
-        return
-      }
-      if (normalizedEventType === SCROLL_BOTTOM_EVENT) {
-        await updateFocusPromptSelection('no')
-        return
-      }
-      if (normalizedEventType === CLICK_EVENT) {
-        await handleFocusPromptChoice(selectedFocusPromptChoice)
-        return
-      }
-      if (normalizedEventType === DOUBLE_CLICK_EVENT) {
-        await handleFocusPromptChoice('no')
-      }
-    }
+    // ── Gesture router ────────────────────────────────────────────────────────
 
     const handleTouchGesture = async (eventType: number | undefined) => {
-      if (!welcomeResolved) {
-        await handleWelcomeGesture(eventType)
+      if (!welcomeResolved) { await handleWelcomeGesture(eventType); return }
+      const norm = eventType ?? CLICK_EVENT
+      if (sessionEndState === 'showing') {
+        if (norm === CLICK_EVENT) { sessionEndState = 'idle'; await writeGlasses(GLASSES_IDLE_CONTENT) }
         return
       }
-      const normalizedEventType = eventType === undefined ? CLICK_EVENT : eventType
+      if (breakOverState === 'asking') { await handleBreakOverGesture(eventType); return }
       if (breakState === 'active') {
-        if (normalizedEventType === CLICK_EVENT) {
-          await exitBreak()
-          return
-        }
-        logGlassDebug('ignored non-tap gesture during break', { eventType, normalizedEventType })
+        if (norm === CLICK_EVENT) { await exitBreak(); return }
         return
       }
-      if (focusPromptState === 'asking') {
-        await handleFocusPromptGesture(eventType)
-        return
-      }
-      if (normalizedEventType === DOUBLE_CLICK_EVENT) {
-        await startBreak()
-        return
-      }
-      logGlassDebug('ignored quiet-focus gesture', { eventType, normalizedEventType })
+      if (focusPromptState === 'asking') { await handleFocusPromptGesture(eventType); return }
+      if (norm === DOUBLE_CLICK_EVENT) { await startBreak(); return }
+      logGlassDebug('ignored quiet-focus gesture', { eventType: norm })
     }
 
     renderWelcome(welcomeState, selectedWelcomeChoice)
@@ -772,12 +684,12 @@ async function bootstrap() {
       }
     }, 5_000)
 
+    // ── IMU / motion stream ───────────────────────────────────────────────────
     // Distraction heuristic — calibrated against real glasses (see imu_ref.md)
     const STILL_THRESHOLD = 0.02
     const WINDOW_MS = 60_000
     const MOVING_FRAC_TRIGGER = 0.7
     const MIN_SAMPLES = 30
-    // Post a motion snapshot every 5s, or immediately on mode flip
     const IMU_POST_INTERVAL_MS = 5_000
 
     let prev: { x: number; y: number; z: number } | null = null
@@ -786,7 +698,7 @@ async function bootstrap() {
     let lastImuPostAt = 0
     let lastPostedMode: 'Focus' | 'Distracted' | null = null
 
-    function postMotionEvent(payload: ImuState & { summary: string }) {
+    const postMotionEvent = (payload: ImuState & { summary: string }) => {
       if (imuSignalPostInFlight) return
       imuSignalPostInFlight = true
       fetch(`${ANCHOR_API_ORIGIN}/events`, {
@@ -798,18 +710,10 @@ async function bootstrap() {
 
     bridge.onEvenHubEvent((event) => {
       if (event.textEvent || event.listEvent) {
-        console.log('even input event', event)
         const eventType = event.textEvent?.eventType ?? event.listEvent?.eventType
         const containerName = event.textEvent?.containerName ?? event.listEvent?.containerName ?? 'unknown'
         const source = event.sysEvent?.eventSource ? String(event.sysEvent.eventSource) : 'touchpad'
-        logGlassDebug('received captured input event', {
-          eventType,
-          formattedEventType: formatEventType(eventType),
-          containerName,
-          source,
-          welcomeResolved,
-          welcomeState,
-        })
+        logGlassDebug('captured input event', { eventType: formatEventType(eventType), containerName, source })
         renderTouchEvent(eventType, containerName, source)
         setStatus(`Input event: ${formatEventType(eventType)} from ${containerName}`)
         void handleTouchGesture(eventType)
@@ -817,32 +721,17 @@ async function bootstrap() {
 
       const sys = event.sysEvent
       if (!sys || sys.eventType !== OsEventTypeList.IMU_DATA_REPORT || !sys.imuData) {
-        if (event.textEvent || event.listEvent) {
-          return
-        }
+        if (event.textEvent || event.listEvent) return
         if (sys?.eventType !== undefined) {
           const source = sys.eventSource ? String(sys.eventSource) : 'system'
-          logGlassDebug('received system event', {
-            eventType: sys.eventType,
-            formattedEventType: formatEventType(sys.eventType),
-            source,
-            welcomeResolved,
-            welcomeState,
-          })
+          logGlassDebug('system event', { eventType: formatEventType(sys.eventType), source })
           renderTouchEvent(sys.eventType, 'system', source)
           setStatus(`System event: ${formatEventType(sys.eventType)} source:${source}`)
-          if (isTouchEventType(sys.eventType)) {
-            void handleTouchGesture(sys.eventType)
-          }
+          if (isTouchEventType(sys.eventType)) void handleTouchGesture(sys.eventType)
           return
         }
         if (event.jsonData) {
-          logGlassDebug('received raw jsonData event', {
-            eventType: sys?.eventType,
-            formattedEventType: formatEventType(sys?.eventType),
-            welcomeResolved,
-            welcomeState,
-          })
+          logGlassDebug('raw jsonData event')
           renderTouchEvent(undefined, 'jsonData', 'raw')
           setStatus('Raw jsonData event received. See console.')
           void handleTouchGesture(sys?.eventType)
@@ -859,40 +748,28 @@ async function bootstrap() {
 
       let energy = 0
       if (prev) {
-        const dx = x - prev.x
-        const dy = y - prev.y
-        const dz = z - prev.z
+        const dx = x - prev.x; const dy = y - prev.y; const dz = z - prev.z
         energy = Math.sqrt(dx * dx + dy * dy + dz * dz)
       }
       prev = { x, y, z }
 
       const now = performance.now()
       const possibleHeadDown = y <= HEAD_DOWN_AXIS_THRESHOLD
-      if (possibleHeadDown && headDownStartedAt === null) {
-        headDownStartedAt = now
-      } else if (!possibleHeadDown) {
-        headDownStartedAt = null
-      }
+      if (possibleHeadDown && headDownStartedAt === null) headDownStartedAt = now
+      else if (!possibleHeadDown) headDownStartedAt = null
       const headDownSeconds = headDownStartedAt === null ? 0 : (now - headDownStartedAt) / 1000
 
       samples.push({ t: now, energy })
-      while (samples.length > 0 && now - samples[0]!.t > WINDOW_MS) {
-        samples.shift()
-      }
+      while (samples.length > 0 && now - samples[0]!.t > WINDOW_MS) samples.shift()
 
       let mode: 'Focus' | 'Distracted' = 'Focus'
       let movingFrac = 0
       if (samples.length >= MIN_SAMPLES) {
         const movingCount = samples.filter((s) => s.energy > STILL_THRESHOLD).length
         movingFrac = movingCount / samples.length
-        if (movingFrac > MOVING_FRAC_TRIGGER) {
-          mode = 'Distracted'
-        }
+        if (movingFrac > MOVING_FRAC_TRIGGER) mode = 'Distracted'
       }
 
-      latestImuState = { mode, energy, movingFrac, x, y, z, possibleHeadDown, headDownSeconds }
-
-      // Post to backend: every 30s OR immediately on mode flip
       const modeFlipped = lastPostedMode !== null && mode !== lastPostedMode
       const intervalElapsed = now - lastImuPostAt >= IMU_POST_INTERVAL_MS
       if ((intervalElapsed || modeFlipped) && !imuSignalPostInFlight) {
@@ -908,7 +785,7 @@ async function bootstrap() {
     })
 
     await bridge.imuControl(true, ImuReportPace.P100)
-    setStatus('G2 touch ready. IMU is still streaming in the background.')
+    setStatus('G2 touch ready. IMU streaming in the background.')
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     setStatus(`Failed to initialize the Even bridge: ${message}`)
@@ -916,4 +793,3 @@ async function bootstrap() {
 }
 
 void bootstrap()
-

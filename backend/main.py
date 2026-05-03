@@ -312,6 +312,40 @@ async def metrics():
     return get_metrics()
 
 
+@app.get("/session/summary")
+async def session_summary():
+    conn = get_conn()
+    session = conn.execute(
+        "SELECT * FROM focus_sessions ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if not session:
+        conn.close()
+        return {}
+    started = datetime.fromisoformat(session["started_at"])
+    ended = datetime.fromisoformat(session["ended_at"]) if session["ended_at"] else datetime.now()
+    total_minutes = max(1, int((ended - started).total_seconds() / 60))
+    drift_count = conn.execute(
+        "SELECT COUNT(*) FROM drift_checks WHERE session_id=? AND is_drift=1 AND sent_to_glasses=1",
+        (session["id"],),
+    ).fetchone()[0]
+    back_on_track = conn.execute(
+        """SELECT COUNT(*) FROM checkpoint_responses cr
+           JOIN drift_checks dc ON cr.drift_check_id = dc.id
+           WHERE dc.session_id=? AND cr.response='continue'""",
+        (session["id"],),
+    ).fetchone()[0]
+    conn.close()
+    focus_score = max(0, min(100, 100 - drift_count * 8 + back_on_track * 4))
+    focus_minutes = max(0, int(total_minutes * focus_score / 100))
+    return {
+        "total_minutes": total_minutes,
+        "focus_minutes": focus_minutes,
+        "drift_count": drift_count,
+        "back_on_track_count": back_on_track,
+        "focus_score": focus_score,
+    }
+
+
 @app.get("/firebase-config")
 async def firebase_config():
     try:
