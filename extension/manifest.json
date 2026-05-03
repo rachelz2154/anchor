@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Sends tab activity signals to the Anchor focus agent.",
   "permissions": ["tabs", "activeTab", "alarms", "storage"],
-  "host_permissions": ["http://localhost:8000/*", "<all_urls>"],
+  "host_permissions": ["http://localhost:8000/*", "https://anchor-production-e4d7.up.railway.app/*", "<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },

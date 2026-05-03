@@ -1,4 +1,4 @@
-const ANCHOR_ORIGIN = 'http://localhost:8000';
+const ANCHOR_ORIGIN = 'https://anchor-production-e4d7.up.railway.app';
 const AGENT_URL = `${ANCHOR_ORIGIN}/events`;
 
 // Domains/patterns to ignore entirely — not meaningful activity
