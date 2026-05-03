@@ -240,6 +240,20 @@ async def current_session():
     return get_active_session() or {}
 
 
+@app.get("/events/recent")
+async def recent_events(limit: int = 20):
+    session = get_active_session()
+    if not session:
+        return []
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, source, type, payload, timestamp FROM activity_events WHERE session_id=? ORDER BY id DESC LIMIT ?",
+        (session["id"], limit),
+    ).fetchall()
+    conn.close()
+    return [{"id": r["id"], "source": r["source"], "type": r["type"], "payload": json.loads(r["payload"]), "timestamp": r["timestamp"]} for r in rows]
+
+
 @app.post("/events")
 async def ingest_event(body: EventPayload):
     session = get_active_session()
@@ -262,13 +276,14 @@ async def ingest_event(body: EventPayload):
     except (FirestoreConfigError, FirestoreRequestError) as exc:
         await broadcast({"type": "agent_error", "message": str(exc)})
     conn = get_conn()
-    conn.execute(
+    cursor = conn.execute(
         "INSERT INTO activity_events (session_id, timestamp, source, type, payload) VALUES (?,?,?,?,?)",
         (session["id"], received_at, body.source, body.type, json.dumps(payload)),
     )
+    event_id = cursor.lastrowid
     conn.commit()
     conn.close()
-    await broadcast({"type": "new_event", "source": body.source, "event_type": body.type, "payload": payload})
+    await broadcast({"type": "new_event", "event_id": event_id, "source": body.source, "event_type": body.type, "payload": payload})
     return {"ok": True}
 
 

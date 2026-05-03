@@ -443,6 +443,7 @@
         onSessionEnded();
         break;
       case 'new_event':
+        if (msg.event_id) seenEventIds.add(msg.event_id);
         addEventRow(msg.source, msg.event_type, msg.payload);
         break;
       case 'agent_thinking':
@@ -520,11 +521,14 @@
   document.getElementById('btn-start').addEventListener('click', async () => {
     const intent = document.getElementById('intent-input').value.trim();
     if (!intent) return;
-    await fetch('/session/start', {
+    const res = await fetch('/session/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ intent, mode: selectedMode }),
     });
+    const session = await res.json();
+    onSessionStarted({ intent: session.intent || intent, mode: session.mode || selectedMode, started_at: session.started_at });
+    sessionStartTime = Date.now();
     document.getElementById('intent-input').value = '';
     document.getElementById('event-list').innerHTML = '<div class="empty">Waiting for signals…</div>';
     document.getElementById('intervention-list').innerHTML = '<div class="empty">No interventions yet.</div>';
@@ -536,6 +540,7 @@
 
   document.getElementById('btn-end').addEventListener('click', async () => {
     await fetch('/session/end', { method: 'POST' });
+    onSessionEnded();
   });
 
   // ── Events feed ──────────────────────────────────────────────────────────
@@ -812,6 +817,25 @@
       });
     });
   }
+
+  // ── Polling fallback (catches events when WS drops) ──────────────────────
+
+  let seenEventIds = new Set();
+
+  async function pollRecentEvents() {
+    try {
+      const events = await fetch('/events/recent').then(r => r.json());
+      if (!Array.isArray(events)) return;
+      // Add newest-first; only show ones we haven't rendered yet
+      [...events].reverse().forEach(ev => {
+        if (seenEventIds.has(ev.id)) return;
+        seenEventIds.add(ev.id);
+        addEventRow(ev.source, ev.type, ev.payload);
+      });
+    } catch {}
+  }
+
+  setInterval(pollRecentEvents, 15_000);
 
   // ── Init ─────────────────────────────────────────────────────────────────
 
