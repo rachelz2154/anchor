@@ -416,7 +416,7 @@
   // ── WebSocket ────────────────────────────────────────────────────────────
 
   function connect() {
-    ws = new WebSocket(`ws://${location.host}/ws`);
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
 
     ws.onopen = () => {
       document.getElementById('ws-dot').classList.add('connected');
